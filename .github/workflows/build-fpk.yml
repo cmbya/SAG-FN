@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: "可选：填写上游 SAG 标签，例如 v1.8.6；留空自动读取最新正式版。不要填写 0.1.0，本地包版本会自动计算"
+        description: "可选：填写上游 SAG 标签，例如 v1.8.6；留空自动读取最新正式版。不要在这里填写本地包版本"
         required: false
         type: string
       local_version:
