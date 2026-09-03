@@ -33,7 +33,7 @@ RUNNER_TEMP_DIR="$(env_value RUNNER_TEMP "$ROOT/.tmp")"
 
 [ -n "$UPSTREAM_TAG" ] || die "UPSTREAM_TAG is required"
 [[ "$LOCAL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid LOCAL_VERSION: $LOCAL_VERSION"
-[[ "$UPSTREAM_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "UPSTREAM_TAG must be a stable semver tag: $UPSTREAM_TAG"
+[[ "$UPSTREAM_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "UPSTREAM_TAG must be the upstream SAG stable tag (for example v1.8.6), not the local package version: $UPSTREAM_TAG"
 
 UPSTREAM_VERSION="$(printf '%s' "$UPSTREAM_TAG" | sed 's/^v//')"
 ASSET_NAME="$(printf 'SAG_%s_%s_fnOS_x86.fpk' "$UPSTREAM_VERSION" "$LOCAL_VERSION")"
