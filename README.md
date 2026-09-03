@@ -11,6 +11,8 @@
 - 发现上游新版本后自动编译、校验并发布 GitHub Pre-release。
 - 也可以在 Actions 中手动运行，填写 upstream_tag；force=true 可以强制重编译。
 - 工作流需要仓库设置允许 Actions 使用 GITHUB_TOKEN 写入内容和创建 Release。
+- 后端编译固定使用 `ubuntu-22.04`，避免 `ubuntu-latest` 的新 glibc 进入 PyInstaller 程序。
+- 打包前会检查后端 ELF 的 glibc 版本需求，超过 `GLIBC_2.35` 会直接停止发布。
 
 GitHub Actions 的 cron 使用 UTC，因此北京时间 10:00 对应 02:00。
 
