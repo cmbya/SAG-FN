@@ -152,10 +152,21 @@ pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
+pid_running() {
+  pid="$1"
+  pid_alive "$pid" || return 1
+  if [ -r "/proc/$pid/stat" ]; then
+    state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null || true)"
+    [ "$state" != "Z" ]
+    return $?
+  fi
+  return 0
+}
+
 clean_stale_pid() {
   file="$1"
   pid="$(pid_from_file "$file")"
-  if [ -n "$pid" ] && ! pid_alive "$pid"; then
+  if [ -n "$pid" ] && ! pid_running "$pid"; then
     rm -f "$file" 2>/dev/null || true
   fi
 }
@@ -171,8 +182,12 @@ http_ok() {
 
 wait_http() {
   url="$1"
+  watch_pid="${2:-}"
   count=0
   while [ "$count" -lt 120 ]; do
+    if [ -n "$watch_pid" ] && ! pid_running "$watch_pid"; then
+      return 2
+    fi
     if http_ok "$url"; then return 0; fi
     sleep 1
     count=$((count + 1))
@@ -180,12 +195,56 @@ wait_http() {
   return 1
 }
 
+backend_diagnostics() {
+  backend_path="$1"
+  backend_pid="$2"
+  log "backend diagnostics begin"
+  log "backend path=$backend_path"
+  if command -v file >/dev/null 2>&1; then
+    file_description="$(file -b "$backend_path" 2>&1 || true)"
+    log "backend file=$file_description"
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    backend_sha256="$(sha256sum "$backend_path" 2>&1 || true)"
+    log "backend sha256=$backend_sha256"
+  fi
+  if [ -r "/proc/$backend_pid/status" ]; then
+    process_state="$(awk '/^State:/{print; exit}' "/proc/$backend_pid/status" 2>/dev/null || true)"
+    process_exe="$(readlink "/proc/$backend_pid/exe" 2>/dev/null || true)"
+    log "backend process pid=$backend_pid $process_state exe=$process_exe"
+  else
+    log "backend process pid=$backend_pid is not present"
+  fi
+  if command -v ldd >/dev/null 2>&1; then
+    ldd_output="$(ldd "$backend_path" 2>&1 || true)"
+    while IFS= read -r ldd_line; do
+      [ -n "$ldd_line" ] && log "ldd: $ldd_line"
+    done <<EOF
+$ldd_output
+EOF
+  fi
+  log "backend diagnostics end"
+}
+
+prepare_backend_log() {
+  backend_log_path="$1"
+  if [ -s "$backend_log_path" ]; then
+    mv -f "$backend_log_path" "$backend_log_path.prev" 2>/dev/null || true
+  fi
+  : > "$backend_log_path" 2>/dev/null || return 1
+  printf '%s [SAG backend] launch log initialized\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$backend_log_path"
+}
+
 start_api() {
   clean_stale_pid "$API_PID_FILE"
   api_pid="$(pid_from_file "$API_PID_FILE")"
-  if [ -n "$api_pid" ] && pid_alive "$api_pid"; then
-    log "backend already running pid=$api_pid"
-    return 0
+  if [ -n "$api_pid" ] && pid_running "$api_pid"; then
+    if http_ok "http://127.0.0.1:${API_PORT}/api/v1/system/health"; then
+      log "backend already running pid=$api_pid"
+      return 0
+    fi
+    log "backend pid=$api_pid exists but is not healthy; stopping it before restart"
+    stop_one backend "$API_PID_FILE"
   fi
   backend="$APP_ROOT/backend/sag-api/sag-api"
   [ -x "$backend" ] || { fail "后端程序不存在：$backend"; return 1; }
@@ -208,17 +267,37 @@ start_api() {
   export SAG_DESKTOP_HOST="127.0.0.1"
   export SAG_DESKTOP_PORT="$API_PORT"
   export TRIM_DATA_ACCESSIBLE_PATHS="${TRIM_DATA_ACCESSIBLE_PATHS:-}"
+  backend_log="$LOG_DIR/backend.log"
+  prepare_backend_log "$backend_log" || {
+    fail "无法写入后端日志：$backend_log"
+    return 1
+  }
+  printf '%s [SAG backend] executable=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$backend" >> "$backend_log"
+  printf '%s [SAG backend] cwd=%s host=%s port=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$APP_ROOT/backend/sag-api" "$SAG_DESKTOP_HOST" "$SAG_DESKTOP_PORT" >> "$backend_log"
   log "starting backend on 127.0.0.1:$API_PORT; data=$PKGVAR"
   (
-    cd "$APP_ROOT/backend/sag-api" || exit 1
+    cd "$APP_ROOT/backend/sag-api" || {
+      printf '%s [SAG backend] cannot change directory to %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$APP_ROOT/backend/sag-api" >&2
+      exit 126
+    }
     exec "$backend"
-  ) >> "$LOG_DIR/backend.log" 2>&1 &
+  ) >> "$backend_log" 2>&1 &
   api_pid="$!"
   printf '%s\n' "$api_pid" > "$API_PID_FILE"
   log "backend pid=$api_pid"
-  if ! wait_http "http://127.0.0.1:${API_PORT}/api/v1/system/health"; then
-    log "backend health check failed"
-    tail -n 80 "$LOG_DIR/backend.log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+  health_status=0
+  wait_http "http://127.0.0.1:${API_PORT}/api/v1/system/health" "$api_pid" || health_status="$?"
+  if [ "$health_status" -ne 0 ]; then
+    if [ "$health_status" -eq 2 ]; then
+      log "backend exited before health check completed (pid=$api_pid)"
+    else
+      log "backend health check failed (pid=$api_pid)"
+    fi
+    backend_diagnostics "$backend" "$api_pid"
+    tail -n 80 "$backend_log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+    stop_one backend "$API_PID_FILE"
     return 1
   fi
 }
@@ -226,7 +305,7 @@ start_api() {
 start_web() {
   clean_stale_pid "$WEB_PID_FILE"
   web_pid="$(pid_from_file "$WEB_PID_FILE")"
-  if [ -n "$web_pid" ] && pid_alive "$web_pid"; then
+  if [ -n "$web_pid" ] && pid_running "$web_pid"; then
     log "web already running pid=$web_pid"
     return 0
   fi
@@ -257,7 +336,7 @@ start_gateway() {
   fi
   clean_stale_pid "$GATEWAY_PID_FILE"
   gateway_pid="$(pid_from_file "$GATEWAY_PID_FILE")"
-  if [ -n "$gateway_pid" ] && pid_alive "$gateway_pid"; then
+  if [ -n "$gateway_pid" ] && pid_running "$gateway_pid"; then
     log "fnOS gateway already running pid=$gateway_pid"
     return 0
   fi
@@ -292,18 +371,18 @@ stop_one() {
   label="$1"
   file="$2"
   pid="$(pid_from_file "$file")"
-  if [ -z "$pid" ] || ! pid_alive "$pid"; then
+  if [ -z "$pid" ] || ! pid_running "$pid"; then
     rm -f "$file" 2>/dev/null || true
     return 0
   fi
   log "stopping $label pid=$pid"
   kill -TERM "$pid" 2>/dev/null || true
   count=0
-  while pid_alive "$pid" && [ "$count" -lt 15 ]; do
+  while pid_running "$pid" && [ "$count" -lt 15 ]; do
     sleep 1
     count=$((count + 1))
   done
-  if pid_alive "$pid"; then
+  if pid_running "$pid"; then
     log "$label did not stop gracefully; sending SIGKILL"
     kill -KILL "$pid" 2>/dev/null || true
   fi
@@ -341,9 +420,9 @@ status_app() {
   gateway_pid="$(pid_from_file "$GATEWAY_PID_FILE")"
   web_pid="$(pid_from_file "$WEB_PID_FILE")"
   api_pid="$(pid_from_file "$API_PID_FILE")"
-  if [ -n "$gateway_pid" ] && pid_alive "$gateway_pid" && \
-    [ -n "$web_pid" ] && pid_alive "$web_pid" && \
-    [ -n "$api_pid" ] && pid_alive "$api_pid"; then
+  if [ -n "$gateway_pid" ] && pid_running "$gateway_pid" && \
+    [ -n "$web_pid" ] && pid_running "$web_pid" && \
+    [ -n "$api_pid" ] && pid_running "$api_pid"; then
     return 0
   fi
   return 3
