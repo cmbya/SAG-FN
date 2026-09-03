@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+# 卸载只停止服务，保留 TRIM_PKGVAR/TRIM_PKGETC，便于误删后的数据恢复。
+exit 0

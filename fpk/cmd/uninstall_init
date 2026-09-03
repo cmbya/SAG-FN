@@ -1,0 +1,7 @@
+#!/bin/sh
+set -u
+
+if [ -n "${TRIM_APPDEST:-}" ] && [ -x "$TRIM_APPDEST/bin/sag-service" ]; then
+  "$TRIM_APPDEST/bin/sag-service" stop >/dev/null 2>&1 || true
+fi
+exit 0

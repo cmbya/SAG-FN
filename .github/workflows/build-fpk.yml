@@ -1,0 +1,251 @@
+name: Build SAG fnOS FPK
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC; this is 10:00 every day in UTC+8.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional upstream tag, for example v1.8.6"
+        required: false
+        type: string
+      force:
+        description: "Rebuild even when the upstream tag is unchanged"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sag-fnos-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: Zleap-AI/SAG
+
+jobs:
+  prepare:
+    name: Check upstream release
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
+      upstream_version: ${{ steps.resolve.outputs.upstream_version }}
+      local_version: ${{ steps.resolve.outputs.local_version }}
+      asset_name: ${{ steps.resolve.outputs.asset_name }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_title: ${{ steps.resolve.outputs.release_title }}
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Resolve latest formal release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          INPUT_FORCE: ${{ inputs.force }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_local="$(jq -r '.local_version // "0.1.0"' version.json)"
+          current_tag="$(jq -r '.upstream_tag // ""' version.json)"
+          current_release_tag="$(jq -r '.release_tag // ""' version.json)"
+          force="$INPUT_FORCE"
+          [ -n "$force" ] || force=false
+
+          if [ -n "$INPUT_UPSTREAM_TAG" ]; then
+            upstream_tag="$INPUT_UPSTREAM_TAG"
+          else
+            releases_json="$(gh api "repos/$UPSTREAM_REPO/releases?per_page=100")"
+            upstream_tag="$(printf '%s' "$releases_json" | jq -r '
+              [.[] | select(.draft == false and .prerelease == false)]
+              | sort_by(.published_at)
+              | if length == 0 then "" else .[-1].tag_name end
+            ')"
+          fi
+
+          [ -n "$upstream_tag" ] || { echo "No formal upstream release found" >&2; exit 1; }
+          if [[ ! "$upstream_tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported upstream tag: $upstream_tag" >&2
+            exit 1
+          fi
+          upstream_version="$(printf '%s' "$upstream_tag" | sed 's/^v//')"
+
+          should_build=true
+          if [ "$upstream_tag" = "$current_tag" ] && [ "$force" != "true" ]; then
+            if [ -n "$current_release_tag" ] && gh release view "$current_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              should_build=false
+              local_version="$current_local"
+            else
+              echo "The upstream tag is unchanged but the release is missing; retrying the same package."
+              local_version="$current_local"
+            fi
+          elif [ -z "$current_tag" ]; then
+            local_version="0.1.0"
+          else
+            local_version="$(./scripts/next-version.sh "$current_local")"
+          fi
+
+          asset_name="$(printf 'SAG_%s_%s_fnOS_x86.fpk' "$upstream_version" "$local_version")"
+          release_tag="fnos-v$upstream_version-$local_version"
+          release_title="SAG fnOS x86 $local_version · upstream $upstream_tag"
+
+          {
+            printf 'should_build=%s\n' "$should_build"
+            printf 'upstream_tag=%s\n' "$upstream_tag"
+            printf 'upstream_version=%s\n' "$upstream_version"
+            printf 'local_version=%s\n' "$local_version"
+            printf 'asset_name=%s\n' "$asset_name"
+            printf 'release_tag=%s\n' "$release_tag"
+            printf 'release_title=%s\n' "$release_title"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$should_build" = "true" ]; then
+            echo "Build required: $asset_name"
+          else
+            echo "Already up to date: $upstream_tag"
+          fi
+
+  build:
+    name: Compile FPK
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_build == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Install image tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      - name: Build native FPK
+        env:
+          UPSTREAM_REPO: Zleap-AI/SAG
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+          LOCAL_VERSION: ${{ needs.prepare.outputs.local_version }}
+          OUT_DIR: dist
+        run: ./scripts/build-fpk.sh
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: sag-fnos-build
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    if: ${{ needs.prepare.outputs.should_build == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: sag-fnos-build
+          path: dist
+
+      - name: Verify output
+        env:
+          ASSET_NAME: ${{ needs.prepare.outputs.asset_name }}
+        run: |
+          set -euo pipefail
+          test -s "dist/$ASSET_NAME"
+          test -s dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
+          test "$(jq -r '.asset_name' dist/build-info.json)" = "$ASSET_NAME"
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_NAME: ${{ needs.prepare.outputs.asset_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_TITLE: ${{ needs.prepare.outputs.release_title }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              "dist/$ASSET_NAME" dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$RELEASE_TITLE" \
+              --notes-file dist/README.md \
+              --prerelease
+          else
+            gh release create "$RELEASE_TAG" \
+              "dist/$ASSET_NAME" dist/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" \
+              --target main \
+              --title "$RELEASE_TITLE" \
+              --notes-file dist/README.md \
+              --prerelease
+          fi
+
+      - name: Record successful build state
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.upstream_version }}
+          LOCAL_VERSION: ${{ needs.prepare.outputs.local_version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+
+          upstream_commit="$(jq -r '.upstream_commit' dist/build-info.json)"
+          built_at="$(jq -r '.built_at' dist/build-info.json)"
+          tmp_file="$(mktemp)"
+          jq \
+            --arg local_version "$LOCAL_VERSION" \
+            --arg upstream_tag "$UPSTREAM_TAG" \
+            --arg upstream_version "$UPSTREAM_VERSION" \
+            --arg upstream_commit "$upstream_commit" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg last_built_at "$built_at" \
+            '.local_version = $local_version
+             | .upstream_tag = $upstream_tag
+             | .upstream_version = $upstream_version
+             | .upstream_commit = $upstream_commit
+             | .release_tag = $release_tag
+             | .last_built_at = $last_built_at' \
+            version.json > "$tmp_file"
+          mv -f "$tmp_file" version.json
+
+          git add version.json
+          if git diff --cached --quiet; then
+            echo "Version state is already current."
+          else
+            git commit -m "chore: record SAG $UPSTREAM_TAG as fnOS $LOCAL_VERSION"
+            git push origin main
+          fi

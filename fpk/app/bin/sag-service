@@ -1,0 +1,372 @@
+#!/bin/sh
+set -u
+
+APP_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+PACKAGE_ROOT="$(CDPATH= cd -- "$APP_ROOT/.." && pwd)"
+PKGVAR="${TRIM_PKGVAR:-$PACKAGE_ROOT/var}"
+PKGETC="${TRIM_PKGETC:-$PACKAGE_ROOT/etc}"
+PKGTMP="${TRIM_PKGTMP:-$PKGVAR/tmp}"
+PKGHOME="${TRIM_PKGHOME:-$PKGVAR/home}"
+CONFIG_FILE="$PKGETC/config.env"
+RUN_DIR="$PKGVAR/run"
+LOG_DIR="$PKGVAR/logs"
+WEB_PID_FILE="$RUN_DIR/web.pid"
+API_PID_FILE="$RUN_DIR/api.pid"
+GATEWAY_PID_FILE="$RUN_DIR/gateway.pid"
+ERROR_FILE="${TRIM_TEMP_LOGFILE:-}"
+WEB_PORT="18088"
+API_PORT="18089"
+BASE_PATH="/app/SAG/"
+
+log() {
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '%s [SAG] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+}
+
+fail() {
+  message="$1"
+  log "ERROR: $message"
+  if [ -n "$ERROR_FILE" ]; then
+    {
+      printf '%s\n' "SAG 启动失败：$message"
+      printf '%s\n' "详细日志目录：$LOG_DIR"
+      printf '%s\n' "最近的主日志："
+      tail -n 60 "$LOG_DIR/sag.log" 2>/dev/null || true
+    } > "$ERROR_FILE" 2>/dev/null || true
+  fi
+  return 1
+}
+
+ensure_dirs() {
+  mkdir -p "$PKGETC" "$PKGVAR" "$PKGTMP" "$PKGHOME" \
+    "$RUN_DIR" "$LOG_DIR" "$PKGVAR/data" "$PKGVAR/engine" "$PKGVAR/uploads" \
+    "$PKGVAR/xdg-config" "$PKGVAR/xdg-cache" || {
+      fail "无法创建配置或数据目录"
+      return 1
+    }
+  chmod 700 "$PKGETC" "$PKGVAR" "$PKGTMP" "$PKGHOME" "$RUN_DIR" 2>/dev/null || true
+}
+
+new_secret() {
+  if command -v od >/dev/null 2>&1 && command -v tr >/dev/null 2>&1; then
+    od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d '[:space:]'
+    return 0
+  fi
+  date +%s%N 2>/dev/null || date +%s
+}
+
+config_value() {
+  key="$1"
+  [ -f "$CONFIG_FILE" ] || return 0
+  awk -F= -v wanted="$key" '$1 == wanted { sub(/^[^=]*=/, ""); print; exit }' "$CONFIG_FILE" 2>/dev/null
+}
+
+write_config() {
+  requested_port="$1"
+  requested_secret="$2"
+  temporary="$CONFIG_FILE.tmp.$$"
+  umask 077
+  {
+    printf '%s\n' '# SAG fnOS native configuration; keep this file private.'
+    printf 'WEB_PORT=%s\n' "$requested_port"
+    printf 'SAG_SECRET_KEY=%s\n' "$requested_secret"
+  } > "$temporary" || {
+    rm -f "$temporary" 2>/dev/null || true
+    fail "无法写入配置文件：$CONFIG_FILE"
+    return 1
+  }
+  chmod 600 "$temporary" 2>/dev/null || true
+  mv -f "$temporary" "$CONFIG_FILE" || {
+    rm -f "$temporary" 2>/dev/null || true
+    fail "无法更新配置文件：$CONFIG_FILE"
+    return 1
+  }
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+valid_port() {
+  port="$1"
+  case "$port" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$port" -ge 1024 ] 2>/dev/null && [ "$port" -le 65535 ] 2>/dev/null
+}
+
+init_config() {
+  ensure_dirs || return 1
+  configured_port="$(config_value WEB_PORT)"
+  configured_secret="$(config_value SAG_SECRET_KEY)"
+  [ -n "$configured_port" ] || configured_port="$WEB_PORT"
+  [ -n "$configured_secret" ] || configured_secret="$(new_secret)"
+  valid_port "$configured_port" || configured_port="$WEB_PORT"
+  if [ ! -s "$CONFIG_FILE" ] || [ -z "$(config_value SAG_SECRET_KEY)" ]; then
+    write_config "$configured_port" "$configured_secret" || return 1
+  fi
+  WEB_PORT="$configured_port"
+}
+
+load_config() {
+  configured_port="$(config_value WEB_PORT)"
+  configured_secret="$(config_value SAG_SECRET_KEY)"
+  [ -n "$configured_port" ] || configured_port="$WEB_PORT"
+  [ -n "$configured_secret" ] || configured_secret="$(new_secret)"
+  valid_port "$configured_port" || {
+    log "invalid configured WEB_PORT=$configured_port; falling back to $WEB_PORT"
+    configured_port="$WEB_PORT"
+  }
+  WEB_PORT="$configured_port"
+  SAG_SECRET_KEY_VALUE="$configured_secret"
+}
+
+find_node() {
+  NODE_BIN=""
+  if [ -n "${SAG_NODE_BIN:-}" ] && [ -x "$SAG_NODE_BIN" ]; then
+    NODE_BIN="$SAG_NODE_BIN"
+  fi
+  if [ -z "$NODE_BIN" ]; then
+    for candidate in \
+      /var/apps/nodejs_v22/target/bin/node \
+      /var/packages/nodejs_v22/target/bin/node \
+      /usr/local/bin/node \
+      /usr/bin/node; do
+      if [ -x "$candidate" ]; then NODE_BIN="$candidate"; break; fi
+    done
+  fi
+  if [ -z "$NODE_BIN" ]; then NODE_BIN="$(command -v node 2>/dev/null || true)"; fi
+  [ -n "$NODE_BIN" ] || return 1
+  [ -x "$NODE_BIN" ] || return 1
+  export NODE_BIN
+}
+
+pid_from_file() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  sed -n '1p' "$file" 2>/dev/null | tr -d '[:space:]'
+}
+
+pid_alive() {
+  pid="$1"
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+clean_stale_pid() {
+  file="$1"
+  pid="$(pid_from_file "$file")"
+  if [ -n "$pid" ] && ! pid_alive "$pid"; then
+    rm -f "$file" 2>/dev/null || true
+  fi
+}
+
+http_ok() {
+  url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 4 "$url" >/dev/null 2>&1
+    return $?
+  fi
+  "$NODE_BIN" -e 'fetch(process.argv[1]).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))' "$url" >/dev/null 2>&1
+}
+
+wait_http() {
+  url="$1"
+  count=0
+  while [ "$count" -lt 120 ]; do
+    if http_ok "$url"; then return 0; fi
+    sleep 1
+    count=$((count + 1))
+  done
+  return 1
+}
+
+start_api() {
+  clean_stale_pid "$API_PID_FILE"
+  api_pid="$(pid_from_file "$API_PID_FILE")"
+  if [ -n "$api_pid" ] && pid_alive "$api_pid"; then
+    log "backend already running pid=$api_pid"
+    return 0
+  fi
+  backend="$APP_ROOT/backend/sag-api/sag-api"
+  [ -x "$backend" ] || { fail "后端程序不存在：$backend"; return 1; }
+  export HOME="$PKGHOME"
+  export XDG_CONFIG_HOME="$PKGVAR/xdg-config"
+  export XDG_CACHE_HOME="$PKGVAR/xdg-cache"
+  export TMPDIR="$PKGTMP"
+  export SAG_ENVIRONMENT="dev"
+  export SAG_DEBUG="false"
+  export SAG_SECRET_KEY="$SAG_SECRET_KEY_VALUE"
+  export SAG_AUTH_MODE="local"
+  export SAG_ALLOW_REGISTRATION="true"
+  export SAG_CORS_ORIGINS="http://localhost:${WEB_PORT},http://127.0.0.1:${WEB_PORT}"
+  export SAG_DATABASE_URL="sqlite+aiosqlite:///${PKGVAR}/data/sag.db"
+  export SAG_DATA_DIR="$PKGVAR/engine"
+  export SAG_UPLOAD_DIR="$PKGVAR/uploads"
+  export SAG_DSH_PUBLIC_URL="http://127.0.0.1:${WEB_PORT}"
+  export SAG_DSH_CONNECTION_FILE="$PKGVAR/dsh-connection.json"
+  export SAG_DSH_LOCAL_DISCOVERY="false"
+  export SAG_DESKTOP_HOST="127.0.0.1"
+  export SAG_DESKTOP_PORT="$API_PORT"
+  export TRIM_DATA_ACCESSIBLE_PATHS="${TRIM_DATA_ACCESSIBLE_PATHS:-}"
+  log "starting backend on 127.0.0.1:$API_PORT; data=$PKGVAR"
+  (
+    cd "$APP_ROOT/backend/sag-api" || exit 1
+    exec "$backend"
+  ) >> "$LOG_DIR/backend.log" 2>&1 &
+  api_pid="$!"
+  printf '%s\n' "$api_pid" > "$API_PID_FILE"
+  log "backend pid=$api_pid"
+  if ! wait_http "http://127.0.0.1:${API_PORT}/api/v1/system/health"; then
+    log "backend health check failed"
+    tail -n 80 "$LOG_DIR/backend.log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+    return 1
+  fi
+}
+
+start_web() {
+  clean_stale_pid "$WEB_PID_FILE"
+  web_pid="$(pid_from_file "$WEB_PID_FILE")"
+  if [ -n "$web_pid" ] && pid_alive "$web_pid"; then
+    log "web already running pid=$web_pid"
+    return 0
+  fi
+  [ -f "$APP_ROOT/web/server.js" ] || { fail "Next.js 服务入口不存在：$APP_ROOT/web/server.js"; return 1; }
+  log "starting Next.js on 0.0.0.0:$WEB_PORT"
+  (
+    cd "$APP_ROOT/web" || exit 1
+    export NODE_ENV="production"
+    export HOSTNAME="0.0.0.0"
+    export PORT="$WEB_PORT"
+    export NEXT_TELEMETRY_DISABLED="1"
+    exec "$NODE_BIN" server.js
+  ) >> "$LOG_DIR/webui.log" 2>&1 &
+  web_pid="$!"
+  printf '%s\n' "$web_pid" > "$WEB_PID_FILE"
+  log "web pid=$web_pid"
+  if ! wait_http "http://127.0.0.1:${WEB_PORT}${BASE_PATH}"; then
+    log "web health check failed"
+    tail -n 80 "$LOG_DIR/webui.log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+    return 1
+  fi
+}
+
+start_gateway() {
+  if [ "${SAG_SKIP_GATEWAY:-0}" = "1" ]; then
+    log "fnOS gateway skipped by SAG_SKIP_GATEWAY=1 (diagnostic mode)"
+    return 0
+  fi
+  clean_stale_pid "$GATEWAY_PID_FILE"
+  gateway_pid="$(pid_from_file "$GATEWAY_PID_FILE")"
+  if [ -n "$gateway_pid" ] && pid_alive "$gateway_pid"; then
+    log "fnOS gateway already running pid=$gateway_pid"
+    return 0
+  fi
+  [ -f "$APP_ROOT/bin/sag-gateway.mjs" ] || { fail "fnOS 网关入口不存在"; return 1; }
+  socket_path="$APP_ROOT/app.sock"
+  rm -f "$socket_path" 2>/dev/null || true
+  log "starting fnOS Unix-socket gateway: $socket_path"
+  (
+    export SAG_GATEWAY_SOCKET="$socket_path"
+    export SAG_WEB_HOST="127.0.0.1"
+    export SAG_WEB_PORT="$WEB_PORT"
+    exec "$NODE_BIN" "$APP_ROOT/bin/sag-gateway.mjs"
+  ) >> "$LOG_DIR/gateway.log" 2>&1 &
+  gateway_pid="$!"
+  printf '%s\n' "$gateway_pid" > "$GATEWAY_PID_FILE"
+  count=0
+  while [ "$count" -lt 20 ]; do
+    if [ -S "$socket_path" ] || [ -e "$socket_path" ]; then
+      log "fnOS gateway ready pid=$gateway_pid"
+      return 0
+    fi
+    if ! pid_alive "$gateway_pid"; then break; fi
+    sleep 1
+    count=$((count + 1))
+  done
+  tail -n 80 "$LOG_DIR/gateway.log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+  fail "fnOS 应用网关启动失败"
+  return 1
+}
+
+stop_one() {
+  label="$1"
+  file="$2"
+  pid="$(pid_from_file "$file")"
+  if [ -z "$pid" ] || ! pid_alive "$pid"; then
+    rm -f "$file" 2>/dev/null || true
+    return 0
+  fi
+  log "stopping $label pid=$pid"
+  kill -TERM "$pid" 2>/dev/null || true
+  count=0
+  while pid_alive "$pid" && [ "$count" -lt 15 ]; do
+    sleep 1
+    count=$((count + 1))
+  done
+  if pid_alive "$pid"; then
+    log "$label did not stop gracefully; sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$file" 2>/dev/null || true
+}
+
+start_app() {
+  [ -n "${ERROR_FILE:-}" ] && rm -f "$ERROR_FILE" 2>/dev/null || true
+  log "----- start requested -----"
+  log "app=${TRIM_APPNAME:-SAG} version=${TRIM_APPVER:-0.1.0} arch=${TRIM_SYS_ARCH:-unknown}"
+  log "appdest=$APP_ROOT etc=$PKGETC var=$PKGVAR tmp=$PKGTMP"
+  init_config || return 1
+  load_config
+  find_node || { fail "找不到 Node.js 运行时，请先安装 fnOS 依赖 nodejs_v22"; return 1; }
+  log "node=$NODE_BIN version=$($NODE_BIN --version 2>/dev/null || printf unknown) web_port=$WEB_PORT api_port=$API_PORT"
+  start_api || return 1
+  start_web || { stop_one backend "$API_PID_FILE"; return 1; }
+  start_gateway || { stop_one web "$WEB_PID_FILE"; stop_one backend "$API_PID_FILE"; return 1; }
+  log "SAG started successfully; gateway=/app/SAG web_port=$WEB_PORT"
+}
+
+stop_app() {
+  log "----- stop requested -----"
+  stop_one gateway "$GATEWAY_PID_FILE"
+  stop_one web "$WEB_PID_FILE"
+  stop_one backend "$API_PID_FILE"
+  rm -f "$APP_ROOT/app.sock" 2>/dev/null || true
+  log "SAG stopped"
+}
+
+status_app() {
+  clean_stale_pid "$GATEWAY_PID_FILE"
+  clean_stale_pid "$WEB_PID_FILE"
+  clean_stale_pid "$API_PID_FILE"
+  gateway_pid="$(pid_from_file "$GATEWAY_PID_FILE")"
+  web_pid="$(pid_from_file "$WEB_PID_FILE")"
+  api_pid="$(pid_from_file "$API_PID_FILE")"
+  if [ -n "$gateway_pid" ] && pid_alive "$gateway_pid" && \
+    [ -n "$web_pid" ] && pid_alive "$web_pid" && \
+    [ -n "$api_pid" ] && pid_alive "$api_pid"; then
+    return 0
+  fi
+  return 3
+}
+
+configure_app() {
+  init_config || return 1
+  requested_port="${wizard_web_port:-}"
+  if [ -n "$requested_port" ]; then
+    valid_port "$requested_port" || { fail "WebUI 端口必须是 1024-65535 的数字"; return 1; }
+    configured_secret="$(config_value SAG_SECRET_KEY)"
+    [ -n "$configured_secret" ] || configured_secret="$(new_secret)"
+    write_config "$requested_port" "$configured_secret" || return 1
+    log "WebUI port changed to $requested_port"
+  fi
+}
+
+case "${1:-}" in
+  init) init_config ;;
+  configure) configure_app ;;
+  start) start_app ;;
+  stop) stop_app ;;
+  restart) stop_app; start_app ;;
+  status) status_app ;;
+  *) fail "未知命令：${1:-<empty>}"; exit 1 ;;
+esac

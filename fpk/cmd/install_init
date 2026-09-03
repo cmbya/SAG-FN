@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+arch="$(uname -m 2>/dev/null || true)"
+case "$arch" in
+  x86_64|amd64) ;;
+  *)
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+      printf 'SAG 原生包仅支持 x86_64，当前架构：%s\n' "$arch" > "$TRIM_TEMP_LOGFILE" 2>/dev/null || true
+    fi
+    exit 1
+    ;;
+esac
+exit 0

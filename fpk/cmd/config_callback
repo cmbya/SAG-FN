@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+APPDEST="${TRIM_APPDEST:-}"
+[ -n "$APPDEST" ] || exit 0
+was_running=0
+if "$APPDEST/bin/sag-service" status >/dev/null 2>&1; then was_running=1; fi
+if [ "$was_running" = "1" ]; then "$APPDEST/bin/sag-service" stop; fi
+"$APPDEST/bin/sag-service" configure
+if [ "$was_running" = "1" ]; then "$APPDEST/bin/sag-service" start; fi
+exit 0

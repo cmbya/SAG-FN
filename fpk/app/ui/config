@@ -1,0 +1,17 @@
+{
+  ".url": {
+    "SAG.Application": {
+      "title": "SAG",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/SAG",
+      "gatewaySocket": "app.sock",
+      "url": "/app/SAG/",
+      "allUsers": false,
+      "control": {
+        "accessPerm": "readonly"
+      }
+    }
+  }
+}

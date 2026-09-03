@@ -1,0 +1,15 @@
+appname=SAG
+version=__LOCAL_VERSION__
+display_name=SAG
+desc=Zleap-AI 的个人知识库与智能检索应用（fnOS x86 原生版）
+source=thirdparty
+platform=x86
+maintainer=Zleap-AI / Personal Build
+desktop_uidir=ui
+desktop_applaunchname=SAG.Application
+service_port=18088
+checkport=true
+ctl_stop=true
+disable_authorization_path=false
+install_dep_apps=nodejs_v22
+checksum=__APP_TGZ_MD5__

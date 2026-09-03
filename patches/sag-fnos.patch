@@ -1,0 +1,87 @@
+diff --git a/apps/web/lib/api.ts b/apps/web/lib/api.ts
+index f610239..eaef71e 100644
+--- a/apps/web/lib/api.ts
++++ b/apps/web/lib/api.ts
+@@ -46,6 +46,10 @@ import type {
+ /** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
+ function resolveApiBase(): string {
+   const configured = process.env.NEXT_PUBLIC_API_BASE;
++  // fnOS native packaging uses a same-origin Next.js reverse proxy so the
++  // browser never needs to know the loopback API port. A single slash is the
++  // build-time sentinel for that mode.
++  if (configured === "/") return "";
+   if (typeof window !== "undefined") {
+     const { protocol, hostname } = window.location;
+     const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
+@@ -270,7 +274,7 @@ async function streamGlobalSearch(
+ 
+   if (response.status === 401 && typeof window !== "undefined") {
+     clearToken();
+-    window.location.href = "/login";
++    window.location.href = API_BASE + "/login";
+   }
+   if (!response.ok || !response.body) {
+     clearStreamTimeout();
+@@ -500,7 +504,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+     redirectOnUnauthorized
+   ) {
+     clearToken();
+-    window.location.href = "/login";
++    window.location.href = API_BASE + "/login";
+   }
+ 
+   if (!res.ok) {
+diff --git a/apps/web/middleware.ts b/apps/web/middleware.ts
+index adf86b6..d66ab22 100644
+--- a/apps/web/middleware.ts
++++ b/apps/web/middleware.ts
+@@ -9,6 +9,13 @@ export function middleware(req: NextRequest) {
+   const token = req.cookies.get(tokenCookieName(req.headers.get("host") ?? ""))?.value;
+   const { pathname } = req.nextUrl;
+ 
++  // The fnOS native build sends API and MCP calls through the Next.js
++  // same-origin reverse proxy. They must reach FastAPI without the page-login
++  // redirect applied to browser routes.
++  if (pathname === "/api" || pathname.startsWith("/api/") || pathname === "/mcp" || pathname.startsWith("/mcp/")) {
++    return NextResponse.next();
++  }
++
+   if (pathname === "/") {
+     const url = req.nextUrl.clone();
+     url.pathname = token ? "/chat" : "/login";
+diff --git a/apps/web/next.config.mjs b/apps/web/next.config.mjs
+index 4c0b317..cb51866 100644
+--- a/apps/web/next.config.mjs
++++ b/apps/web/next.config.mjs
+@@ -1,11 +1,16 @@
+ import createNextIntlPlugin from "next-intl/plugin";
+ 
+ const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
++const internalApiBase = (process.env.SAG_INTERNAL_API_URL || "http://127.0.0.1:18089").replace(/\/+$/, "");
++const basePath = (process.env.SAG_BASE_PATH || "").replace(/\/+$/, "");
+ 
+ /** @type {import('next').NextConfig} */
+ const nextConfig = {
+   reactStrictMode: true,
+   output: "standalone",
++  // fnOS opens the app through its Unix-socket gateway under /app/SAG.
++  // Keeping this in the production build also prefixes Next static assets.
++  basePath,
+   // Keep development HMR artifacts isolated from `next build` output.
+   distDir: process.env.NODE_ENV === "development" ? ".next-dev" : ".next",
+   eslint: { ignoreDuringBuilds: true },
+@@ -19,6 +24,14 @@ const nextConfig = {
+       { source: "/sources/:id", destination: "/knowledge/:id", permanent: false },
+     ];
+   },
++  // fnOS serves the Next standalone app on the only exposed port. Keep the
++  // FastAPI process on loopback and proxy API/MCP traffic through this origin.
++  async rewrites() {
++    return [
++      { source: "/api/:path*", destination: internalApiBase + "/api/:path*" },
++      { source: "/mcp/:path*", destination: internalApiBase + "/mcp/:path*" },
++    ];
++  },
+ };
+ 
+ export default withNextIntl(nextConfig);

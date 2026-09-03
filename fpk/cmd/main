@@ -1,0 +1,11 @@
+#!/bin/sh
+set -u
+
+if [ -n "${TRIM_APPDEST:-}" ]; then
+  APPDEST="$TRIM_APPDEST"
+else
+  CMD_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  APPDEST="$CMD_DIR/../target"
+fi
+
+exec "$APPDEST/bin/sag-service" "${1:-}"

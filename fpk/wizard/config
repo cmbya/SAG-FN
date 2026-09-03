@@ -1,0 +1,17 @@
+[
+  {
+    "stepTitle": "SAG 配置",
+    "items": [
+      {
+        "type": "text",
+        "field": "wizard_web_port",
+        "label": "WebUI 端口",
+        "rules": []
+      },
+      {
+        "type": "tips",
+        "helpText": "修改端口后应用会自动重启；知识库、SQLite、LanceDB、上传文件和日志保存在应用私有数据目录，升级时保留。"
+      }
+    ]
+  }
+]
