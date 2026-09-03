@@ -85,3 +85,17 @@ index 4c0b317..cb51866 100644
  };
  
  export default withNextIntl(nextConfig);
+diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
+--- a/apps/api/packaging/sag-api.spec
++++ b/apps/api/packaging/sag-api.spec
+@@ -119,6 +119,9 @@
+     strip=False,
+     upx=False,
+-    console=False,
++    # fnOS runs the sidecar as a service and redirects stdout/stderr to the
++    # package log. Keep the console enabled so early import and loader errors
++    # are visible instead of producing an empty backend.log.
++    console=True,
+     disable_windowed_traceback=False,
+     argv_emulation=False,
+     target_arch=None,
