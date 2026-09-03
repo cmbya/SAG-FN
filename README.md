@@ -10,7 +10,7 @@
 - 自动排除 draft、prerelease、beta 和 rc 版本。
 - 发现上游新版本后自动编译、校验并发布 GitHub Pre-release。
 - 也可以在 Actions 中手动运行：`upstream_tag` 填上游标签，`local_version` 填本地 FPK 版本；`local_version` 留空时会根据 `version.json` 自动递增，填写后则使用填写的版本号。
-- 定时任务在上游没有变化时不会重复编译；手动运行即使上游没有变化，`local_version` 留空也会递增一个本地版本。`force=true` 仍可强制重编译。
+- 定时任务在上游没有变化时不会重复编译；手动运行即使上游没有变化，`local_version` 留空也会递增一个本地版本。
 - 工作流需要仓库设置允许 Actions 使用 GITHUB_TOKEN 写入内容和创建 Release。
 - 后端编译固定使用 `ubuntu-22.04`，避免 `ubuntu-latest` 的新 glibc 进入 PyInstaller 程序。
 - 打包前会检查后端 ELF 的 glibc 版本需求，超过 `GLIBC_2.35` 会直接停止发布。
