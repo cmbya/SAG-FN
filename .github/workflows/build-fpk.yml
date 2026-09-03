@@ -10,6 +10,10 @@ on:
         description: "可选：填写上游 SAG 标签，例如 v1.8.6；留空自动读取最新正式版。不要填写 0.1.0，本地包版本会自动计算"
         required: false
         type: string
+      local_version:
+        description: "可选：填写本地 FPK 版本，例如 0.1.1；留空则根据 version.json 自动递增"
+        required: false
+        type: string
       force:
         description: "强制重编译同一上游，并递增本地版本（已安装旧包请选择 true）"
         required: false
@@ -47,6 +51,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+          INPUT_LOCAL_VERSION: ${{ inputs.local_version }}
           INPUT_FORCE: ${{ inputs.force }}
         shell: bash
         run: |
@@ -55,8 +60,14 @@ jobs:
           current_local="$(jq -r '.local_version // "0.1.0"' version.json)"
           current_tag="$(jq -r '.upstream_tag // ""' version.json)"
           current_release_tag="$(jq -r '.release_tag // ""' version.json)"
+          requested_local="$INPUT_LOCAL_VERSION"
           force="$INPUT_FORCE"
           [ -n "$force" ] || force=false
+
+          if [ -n "$requested_local" ] && [[ ! "$requested_local" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported local version: $requested_local (expected X.Y.Z)" >&2
+            exit 1
+          fi
 
           if [ -n "$INPUT_UPSTREAM_TAG" ]; then
             if [ "$INPUT_UPSTREAM_TAG" = "$current_local" ]; then
@@ -81,7 +92,21 @@ jobs:
           upstream_version="$(printf '%s' "$upstream_tag" | sed 's/^v//')"
 
           should_build=true
-          if [ "$upstream_tag" = "$current_tag" ] && [ "$force" != "true" ]; then
+          if [ -n "$requested_local" ]; then
+            local_version="$requested_local"
+            if [ "$force" = "true" ]; then
+              echo "Manual local version selected with force=true: $local_version"
+            else
+              echo "Manual local version selected: $local_version"
+            fi
+          elif [ "${GITHUB_EVENT_NAME:-}" = "workflow_dispatch" ]; then
+            if [ -z "$current_tag" ]; then
+              local_version="0.1.0"
+            else
+              local_version="$(./scripts/next-version.sh "$current_local")"
+            fi
+            echo "Manual run without local_version; auto-incrementing to $local_version."
+          elif [ "$upstream_tag" = "$current_tag" ] && [ "$force" != "true" ]; then
             if [ -n "$current_release_tag" ] && gh release view "$current_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               should_build=false
               local_version="$current_local"
@@ -92,7 +117,7 @@ jobs:
           elif [ -z "$current_tag" ]; then
             local_version="0.1.0"
           elif [ "$upstream_tag" = "$current_tag" ] && [ "$force" = "true" ]; then
-            echo "Forced rebuild for the same upstream tag; creating a new local package revision."
+            echo "Forced scheduled rebuild for the same upstream tag; creating a new local package revision."
             local_version="$(./scripts/next-version.sh "$current_local")"
           else
             local_version="$(./scripts/next-version.sh "$current_local")"
