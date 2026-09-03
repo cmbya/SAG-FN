@@ -91,6 +91,9 @@ jobs:
             fi
           elif [ -z "$current_tag" ]; then
             local_version="0.1.0"
+          elif [ "$upstream_tag" = "$current_tag" ] && [ "$force" = "true" ]; then
+            echo "Forced rebuild for the same upstream tag; creating a new local package revision."
+            local_version="$(./scripts/next-version.sh "$current_local")"
           else
             local_version="$(./scripts/next-version.sh "$current_local")"
           fi
