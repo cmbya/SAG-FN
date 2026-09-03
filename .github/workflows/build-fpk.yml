@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       force:
-        description: "Rebuild even when the upstream tag is unchanged"
+        description: "强制重编译同一上游，并递增本地版本（已安装旧包请选择 true）"
         required: false
         default: false
         type: boolean
