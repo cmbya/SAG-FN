@@ -119,7 +119,9 @@ jobs:
     name: Compile FPK
     needs: prepare
     if: ${{ needs.prepare.outputs.should_build == 'true' }}
-    runs-on: ubuntu-latest
+    # ubuntu-latest is now Ubuntu 24.04 and its glibc is too new for some
+    # fnOS installations. Build the PyInstaller sidecar on Ubuntu 22.04.
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout builder
         uses: actions/checkout@v4
@@ -142,13 +144,14 @@ jobs:
       - name: Install image tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick
+          sudo apt-get install -y binutils file imagemagick
 
       - name: Build native FPK
         env:
           UPSTREAM_REPO: Zleap-AI/SAG
           UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
           LOCAL_VERSION: ${{ needs.prepare.outputs.local_version }}
+          GLIBC_MAX: "2.35"
           OUT_DIR: dist
         run: ./scripts/build-fpk.sh
 
