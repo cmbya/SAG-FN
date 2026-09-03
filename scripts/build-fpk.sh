@@ -30,16 +30,18 @@ SOURCE_DIR="$(env_value SAG_SOURCE_DIR '')"
 SKIP_PATCH="$(env_value SAG_SKIP_PATCH '0')"
 SKIP_BUILD="$(env_value SAG_SKIP_BUILD '0')"
 RUNNER_TEMP_DIR="$(env_value RUNNER_TEMP "$ROOT/.tmp")"
+GLIBC_MAX="$(env_value GLIBC_MAX '2.35')"
 
 [ -n "$UPSTREAM_TAG" ] || die "UPSTREAM_TAG is required"
 [[ "$LOCAL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid LOCAL_VERSION: $LOCAL_VERSION"
 [[ "$UPSTREAM_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "UPSTREAM_TAG must be the upstream SAG stable tag (for example v1.8.6), not the local package version: $UPSTREAM_TAG"
 [ "$UPSTREAM_TAG" != "$LOCAL_VERSION" ] || die "UPSTREAM_TAG is the upstream SAG tag (for example v1.8.6); $UPSTREAM_TAG is the local package version"
+[[ "$GLIBC_MAX" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid GLIBC_MAX: $GLIBC_MAX"
 
 UPSTREAM_VERSION="$(printf '%s' "$UPSTREAM_TAG" | sed 's/^v//')"
 ASSET_NAME="$(printf 'SAG_%s_%s_fnOS_x86.fpk' "$UPSTREAM_VERSION" "$LOCAL_VERSION")"
 
-for command_name in git npm node uv python3 tar md5sum sha256sum gzip sed awk convert; do
+for command_name in git npm node uv python3 tar md5sum sha256sum gzip sed awk convert file objdump grep sort; do
   require_command "$command_name"
 done
 
@@ -86,6 +88,39 @@ if [ "$SKIP_BUILD" != "1" ]; then
   )
 fi
 
+check_glibc_compatibility() {
+  local root="$1"
+  local max_allowed="$2"
+  local elf_path
+  local description
+  local required_version
+  local highest_required
+  local failed=0
+
+  printf 'Checking backend ELF glibc requirements (maximum GLIBC_%s)\n' "$max_allowed"
+  while IFS= read -r -d '' elf_path; do
+    description="$(file -b "$elf_path" 2>/dev/null || true)"
+    [[ "$description" == *ELF* ]] || continue
+    highest_required="$({
+      objdump -T "$elf_path" 2>/dev/null \
+        | grep -oE '\(GLIBC_[0-9]+(\.[0-9]+)+\)' \
+        | tr -d '()' \
+        | sed 's/^GLIBC_//' \
+        | sort -Vu \
+        | tail -n 1
+    } || true)"
+    [ -n "$highest_required" ] || continue
+    required_version="$highest_required"
+    if [ "$(printf '%s\n%s\n' "$max_allowed" "$required_version" | sort -V | tail -n 1)" != "$max_allowed" ]; then
+      printf 'ERROR: %s requires GLIBC_%s; build target allows up to GLIBC_%s\n' \
+        "$elf_path" "$required_version" "$max_allowed" >&2
+      failed=1
+    fi
+  done < <(find "$root" -type f -print0)
+
+  [ "$failed" -eq 0 ] || die "backend is not compatible with the selected fnOS glibc target"
+}
+
 FRONTEND_STANDALONE="$SOURCE_DIR/apps/web/.next/standalone"
 FRONTEND_STATIC="$SOURCE_DIR/apps/web/.next/static"
 FRONTEND_PUBLIC="$SOURCE_DIR/apps/web/public"
@@ -98,6 +133,7 @@ ICON_SOURCE="$FRONTEND_PUBLIC/sag-icon.png"
 [ -f "$BACKEND_DIST/sag-api" ] || die "PyInstaller executable is missing"
 [ -f "$ICON_SOURCE" ] || die "SAG icon is missing"
 [ -f "$SOURCE_DIR/LICENSE" ] || die "upstream LICENSE is missing"
+check_glibc_compatibility "$BACKEND_DIST" "$GLIBC_MAX"
 
 PACKAGE_DIR="$WORK_DIR/package"
 APP_DIR="$PACKAGE_DIR/app"
