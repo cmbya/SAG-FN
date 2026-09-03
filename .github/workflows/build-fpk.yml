@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_tag:
-        description: "Optional upstream tag, for example v1.8.6"
+        description: "可选：填写上游 SAG 标签，例如 v1.8.6；留空自动读取最新正式版。不要填写 0.1.0，本地包版本会自动计算"
         required: false
         type: string
       force:
@@ -59,6 +59,10 @@ jobs:
           [ -n "$force" ] || force=false
 
           if [ -n "$INPUT_UPSTREAM_TAG" ]; then
+            if [ "$INPUT_UPSTREAM_TAG" = "$current_local" ]; then
+              echo "::error title=上游版本填写错误::upstream_tag 要填写上游 SAG 标签（例如 v1.8.6），不能填写本地包版本 $current_local"
+              exit 1
+            fi
             upstream_tag="$INPUT_UPSTREAM_TAG"
           else
             releases_json="$(gh api "repos/$UPSTREAM_REPO/releases?per_page=100")"
