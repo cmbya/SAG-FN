@@ -14,6 +14,7 @@
 - 工作流需要仓库设置允许 Actions 使用 GITHUB_TOKEN 写入内容和创建 Release。
 - 后端编译固定使用 `ubuntu-22.04`，避免 `ubuntu-latest` 的新 glibc 进入 PyInstaller 程序。
 - 打包前会检查后端 ELF 的 glibc 版本需求，超过 `GLIBC_2.35` 会直接停止发布。
+- 后端启动日志会写入 `backend.log`；健康检查失败时会在 `sag.log` 记录进程状态、可执行文件校验和动态库诊断。
 
 GitHub Actions 的 cron 使用 UTC，因此北京时间 10:00 对应 02:00。
 
@@ -40,6 +41,7 @@ Release 标题和说明也会显示上游版本、本地包版本、上游提交
 - WebUI 通过 fnOS Unix socket 网关访问 /app/SAG/。
 - 配置、SQLite、LanceDB、上传文件和日志保存在持久化数据目录。
 - 升级时保留持久化数据；卸载回调只停止服务，不主动删除数据。
+- 后端启动失败时可查看 `@appdata/SAG/logs/backend.log` 和 `sag.log`。
 
 ## 手动本地构建
 
