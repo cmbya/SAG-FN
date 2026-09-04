@@ -285,6 +285,7 @@ start_api() {
     fail "无法写入后端日志：$backend_log"
     return 1
   }
+  export SAG_BOOT_LOG="$backend_log"
   printf '%s [SAG backend] executable=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$backend" >> "$backend_log"
   printf '%s [SAG backend] cwd=%s host=%s port=%s\n' \
     "$(date '+%Y-%m-%d %H:%M:%S')" "$APP_ROOT/backend/sag-api" "$SAG_DESKTOP_HOST" "$SAG_DESKTOP_PORT" >> "$backend_log"
