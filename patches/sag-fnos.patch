@@ -88,13 +88,14 @@ index 4c0b317..cb51866 100644
 diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
 --- a/apps/api/packaging/sag-api.spec
 +++ b/apps/api/packaging/sag-api.spec
-@@ -70,11 +70,11 @@
+@@ -70,11 +70,12 @@
  for package in (
      "jieba-py",
      "sag-api",
      "zleap-sag",
 -    "lancedb",
 +    "lancedb-compat",
++    "lancedb",
      "litellm",
      "markitdown",
      "mcp",

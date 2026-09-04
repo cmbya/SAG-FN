@@ -99,6 +99,41 @@ if [ "$SKIP_BUILD" != "1" ]; then
   uv pip uninstall --python "$API_PYTHON" lancedb
   uv pip install --python "$API_PYTHON" --no-deps "lancedb-compat==$LANCEDB_COMPAT_VERSION"
 
+  # lancedb-compat ships the lancedb namespace but its entry point still
+  # asks importlib.metadata for the historical distribution name. Add a
+  # local metadata alias so both the Python import and PyInstaller work.
+  "$API_PYTHON" - "$LANCEDB_COMPAT_VERSION" <<'PY'
+from importlib import metadata
+from pathlib import Path
+import shutil
+import sys
+import sysconfig
+
+expected = sys.argv[1]
+site = Path(sysconfig.get_paths()["purelib"])
+compat_dist = next(site.glob("lancedb_compat-*.dist-info"), None)
+if compat_dist is None:
+    raise SystemExit("lancedb-compat dist-info directory is missing")
+compat_version = metadata.version("lancedb-compat")
+if compat_version != expected:
+    raise SystemExit(f"lancedb-compat version mismatch: {compat_version} != {expected}")
+alias_dist = site / f"lancedb-{compat_version}.dist-info"
+if not alias_dist.exists():
+    shutil.copytree(compat_dist, alias_dist)
+metadata_file = alias_dist / "METADATA"
+metadata_text = metadata_file.read_text(encoding="utf-8")
+if "Name: lancedb-compat\n" not in metadata_text:
+    raise SystemExit("unexpected lancedb-compat metadata format")
+metadata_file.write_text(
+    metadata_text.replace("Name: lancedb-compat\n", "Name: lancedb\n", 1),
+    encoding="utf-8",
+)
+record_file = alias_dist / "RECORD"
+if record_file.exists():
+    record_file.unlink()
+print(f"Created lancedb metadata alias: {alias_dist.name}")
+PY
+
   SMOKE_SCRIPT="$WORK_DIR/lancedb-smoke.py"
   cat > "$SMOKE_SCRIPT" <<'PY'
 import os
