@@ -105,14 +105,52 @@ diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
 diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 --- a/apps/api/sag_api/desktop.py
 +++ b/apps/api/sag_api/desktop.py
-@@ -3,8 +3,21 @@
- from __future__ import annotations
- 
- import multiprocessing
- import os
-+import traceback
- 
+@@ -1,37 +1,55 @@
+-"""Desktop sidecar entry point."""
+-
+-from __future__ import annotations
+-
+-import multiprocessing
+-import os
+-
 -import uvicorn
+-
+-
+-def _port() -> int:
+-    value = os.getenv("SAG_DESKTOP_PORT", "8000")
+-    try:
+-        port = int(value)
+-    except ValueError as error:
+-        raise RuntimeError("SAG_DESKTOP_PORT must be an integer") from error
+-    if not 1 <= port <= 65535:
+-        raise RuntimeError("SAG_DESKTOP_PORT must be between 1 and 65535")
+-    return port
+-
+-
+-def main() -> None:
+-    # PyInstaller children re-enter this executable. Dispatch multiprocessing
+-    # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
+-    # launch a second API server and collide with the desktop sidecar port.
+-    multiprocessing.freeze_support()
+-    uvicorn.run(
+-        "sag_api.main:app",
+-        host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
+-        port=_port(),
+-        log_level="info",
+-        access_log=False,
+-    )
+-
+-
+-if __name__ == "__main__":
+-    main()
++"""Desktop sidecar entry point."""
++
++from __future__ import annotations
++
++import multiprocessing
++import os
++import traceback
++
 +
 +def _write_boot_error(message: str) -> None:
 +    path = os.getenv("SAG_BOOT_LOG", "").strip()
@@ -128,23 +166,21 @@ diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 +
 +
 +def _port() -> int:
-
-diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
---- a/apps/api/sag_api/desktop.py
-+++ b/apps/api/sag_api/desktop.py
-@@ -21,15 +34,21 @@
- def main() -> None:
-     # PyInstaller children re-enter this executable. Dispatch multiprocessing
-     # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
-     # launch a second API server and collide with the desktop sidecar port.
-     multiprocessing.freeze_support()
--    uvicorn.run(
--        "sag_api.main:app",
--        host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
--        port=_port(),
--        log_level="info",
--        access_log=False,
--    )
++    value = os.getenv("SAG_DESKTOP_PORT", "8000")
++    try:
++        port = int(value)
++    except ValueError as error:
++        raise RuntimeError("SAG_DESKTOP_PORT must be an integer") from error
++    if not 1 <= port <= 65535:
++        raise RuntimeError("SAG_DESKTOP_PORT must be between 1 and 65535")
++    return port
++
++
++def main() -> None:
++    # PyInstaller children re-enter this executable. Dispatch multiprocessing
++    # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
++    # launch a second API server and collide with the desktop sidecar port.
++    multiprocessing.freeze_support()
 +    try:
 +        import uvicorn
 +
@@ -158,4 +194,7 @@ diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 +    except BaseException:
 +        _write_boot_error(traceback.format_exc())
 +        raise
-
++
++
++if __name__ == "__main__":
++    main()
