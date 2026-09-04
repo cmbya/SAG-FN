@@ -222,6 +222,19 @@ backend_diagnostics() {
     done <<EOF
 $ldd_output
 EOF
+    for runtime_library in \
+      "$backend_dir/_internal/libpython3.12.so.1.0" \
+      "$backend_dir/_internal/libstdc++.so.6"; do
+      if [ -f "$runtime_library" ]; then
+        runtime_name="${runtime_library##*/}"
+        runtime_ldd="$(ldd "$runtime_library" 2>&1 || true)"
+        while IFS= read -r runtime_ldd_line; do
+          [ -n "$runtime_ldd_line" ] && log "ldd $runtime_name: $runtime_ldd_line"
+        done <<EOF
+$runtime_ldd
+EOF
+      fi
+    done
   fi
   log "backend diagnostics end"
 }
@@ -295,6 +308,12 @@ start_api() {
     else
       log "backend health check failed (pid=$api_pid)"
     fi
+    backend_exit_status="running"
+    if ! pid_running "$api_pid"; then
+      backend_exit_status=0
+      wait "$api_pid" 2>/dev/null || backend_exit_status="$?"
+    fi
+    log "backend wait status=$backend_exit_status"
     backend_diagnostics "$backend" "$api_pid"
     tail -n 80 "$backend_log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
     stop_one backend "$API_PID_FILE"
