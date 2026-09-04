@@ -152,9 +152,40 @@ pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
+pid_matches() {
+  pid="$1"
+  label="$2"
+  case "$label" in
+    backend)
+      expected="$APP_ROOT/backend/sag-api/sag-api"
+      actual_exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+      [ "$actual_exe" = "$expected" ]
+      ;;
+    web)
+      [ -r "/proc/$pid/cmdline" ] || return 1
+      command_line="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+      case "$command_line" in
+        *"$APP_ROOT/web/server.js"*) return 0 ;;
+      esac
+      return 1
+      ;;
+    gateway)
+      [ -r "/proc/$pid/cmdline" ] || return 1
+      command_line="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+      case "$command_line" in
+        *"$APP_ROOT/bin/sag-gateway.mjs"*) return 0 ;;
+      esac
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 pid_running() {
   pid="$1"
+  expected_label="$2"
   pid_alive "$pid" || return 1
+  pid_matches "$pid" "$expected_label" || return 1
   if [ -r "/proc/$pid/stat" ]; then
     state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null || true)"
     [ "$state" != "Z" ]
@@ -164,9 +195,10 @@ pid_running() {
 }
 
 clean_stale_pid() {
-  file="$1"
+  label="$1"
+  file="$2"
   pid="$(pid_from_file "$file")"
-  if [ -n "$pid" ] && ! pid_running "$pid"; then
+  if [ -n "$pid" ] && ! pid_running "$pid" "$label"; then
     rm -f "$file" 2>/dev/null || true
   fi
 }
@@ -183,9 +215,10 @@ http_ok() {
 wait_http() {
   url="$1"
   watch_pid="${2:-}"
+  watch_label="${3:-}"
   count=0
   while [ "$count" -lt 120 ]; do
-    if [ -n "$watch_pid" ] && ! pid_running "$watch_pid"; then
+    if [ -n "$watch_pid" ] && ! pid_running "$watch_pid" "$watch_label"; then
       return 2
     fi
     if http_ok "$url"; then return 0; fi
@@ -267,9 +300,9 @@ prepare_backend_log() {
 }
 
 start_api() {
-  clean_stale_pid "$API_PID_FILE"
+  clean_stale_pid backend "$API_PID_FILE"
   api_pid="$(pid_from_file "$API_PID_FILE")"
-  if [ -n "$api_pid" ] && pid_running "$api_pid"; then
+  if [ -n "$api_pid" ] && pid_running "$api_pid" backend; then
     if http_ok "http://127.0.0.1:${API_PORT}/api/v1/system/health"; then
       log "backend already running pid=$api_pid"
       return 0
@@ -320,7 +353,7 @@ start_api() {
   printf '%s\n' "$api_pid" > "$API_PID_FILE"
   log "backend pid=$api_pid"
   health_status=0
-  wait_http "http://127.0.0.1:${API_PORT}/api/v1/system/health" "$api_pid" || health_status="$?"
+  wait_http "http://127.0.0.1:${API_PORT}/api/v1/system/health" "$api_pid" backend || health_status="$?"
   if [ "$health_status" -ne 0 ]; then
     if [ "$health_status" -eq 2 ]; then
       log "backend exited before health check completed (pid=$api_pid)"
@@ -328,7 +361,7 @@ start_api() {
       log "backend health check failed (pid=$api_pid)"
     fi
     backend_exit_status="running"
-    if ! pid_running "$api_pid"; then
+    if ! pid_running "$api_pid" backend; then
       backend_exit_status=0
       wait "$api_pid" 2>/dev/null || backend_exit_status="$?"
     fi
@@ -341,9 +374,9 @@ start_api() {
 }
 
 start_web() {
-  clean_stale_pid "$WEB_PID_FILE"
+  clean_stale_pid web "$WEB_PID_FILE"
   web_pid="$(pid_from_file "$WEB_PID_FILE")"
-  if [ -n "$web_pid" ] && pid_running "$web_pid"; then
+  if [ -n "$web_pid" ] && pid_running "$web_pid" web; then
     log "web already running pid=$web_pid"
     return 0
   fi
@@ -360,7 +393,7 @@ start_web() {
   web_pid="$!"
   printf '%s\n' "$web_pid" > "$WEB_PID_FILE"
   log "web pid=$web_pid"
-  if ! wait_http "http://127.0.0.1:${WEB_PORT}${BASE_PATH}"; then
+  if ! wait_http "http://127.0.0.1:${WEB_PORT}${BASE_PATH}" "$web_pid" web; then
     log "web health check failed"
     tail -n 80 "$LOG_DIR/webui.log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
     return 1
@@ -372,9 +405,9 @@ start_gateway() {
     log "fnOS gateway skipped by SAG_SKIP_GATEWAY=1 (diagnostic mode)"
     return 0
   fi
-  clean_stale_pid "$GATEWAY_PID_FILE"
+  clean_stale_pid gateway "$GATEWAY_PID_FILE"
   gateway_pid="$(pid_from_file "$GATEWAY_PID_FILE")"
-  if [ -n "$gateway_pid" ] && pid_running "$gateway_pid"; then
+  if [ -n "$gateway_pid" ] && pid_running "$gateway_pid" gateway; then
     log "fnOS gateway already running pid=$gateway_pid"
     return 0
   fi
@@ -392,11 +425,11 @@ start_gateway() {
   printf '%s\n' "$gateway_pid" > "$GATEWAY_PID_FILE"
   count=0
   while [ "$count" -lt 20 ]; do
-    if [ -S "$socket_path" ] || [ -e "$socket_path" ]; then
+    if pid_running "$gateway_pid" gateway && { [ -S "$socket_path" ] || [ -e "$socket_path" ]; }; then
       log "fnOS gateway ready pid=$gateway_pid"
       return 0
     fi
-    if ! pid_alive "$gateway_pid"; then break; fi
+    if ! pid_running "$gateway_pid" gateway; then break; fi
     sleep 1
     count=$((count + 1))
   done
@@ -409,18 +442,23 @@ stop_one() {
   label="$1"
   file="$2"
   pid="$(pid_from_file "$file")"
-  if [ -z "$pid" ] || ! pid_running "$pid"; then
+  if [ -z "$pid" ] || ! pid_alive "$pid"; then
+    rm -f "$file" 2>/dev/null || true
+    return 0
+  fi
+  if ! pid_matches "$pid" "$label"; then
+    log "$label pid file does not match the expected process; refusing to signal pid=$pid"
     rm -f "$file" 2>/dev/null || true
     return 0
   fi
   log "stopping $label pid=$pid"
   kill -TERM "$pid" 2>/dev/null || true
   count=0
-  while pid_running "$pid" && [ "$count" -lt 15 ]; do
+  while pid_running "$pid" "$label" && [ "$count" -lt 15 ]; do
     sleep 1
     count=$((count + 1))
   done
-  if pid_running "$pid"; then
+  if pid_running "$pid" "$label"; then
     log "$label did not stop gracefully; sending SIGKILL"
     kill -KILL "$pid" 2>/dev/null || true
   fi
@@ -436,7 +474,10 @@ start_app() {
   load_config
   find_node || { fail "找不到 Node.js 运行时，请先安装 fnOS 依赖 nodejs_v22"; return 1; }
   log "node=$NODE_BIN version=$($NODE_BIN --version 2>/dev/null || printf unknown) web_port=$WEB_PORT api_port=$API_PORT"
-  start_api || return 1
+  start_api || {
+    fail "SAG 后端启动失败，请查看 logs/backend.log"
+    return 1
+  }
   start_web || { stop_one backend "$API_PID_FILE"; return 1; }
   start_gateway || { stop_one web "$WEB_PID_FILE"; stop_one backend "$API_PID_FILE"; return 1; }
   log "SAG started successfully; gateway=/app/SAG web_port=$WEB_PORT"
@@ -452,15 +493,15 @@ stop_app() {
 }
 
 status_app() {
-  clean_stale_pid "$GATEWAY_PID_FILE"
-  clean_stale_pid "$WEB_PID_FILE"
-  clean_stale_pid "$API_PID_FILE"
+  clean_stale_pid gateway "$GATEWAY_PID_FILE"
+  clean_stale_pid web "$WEB_PID_FILE"
+  clean_stale_pid backend "$API_PID_FILE"
   gateway_pid="$(pid_from_file "$GATEWAY_PID_FILE")"
   web_pid="$(pid_from_file "$WEB_PID_FILE")"
   api_pid="$(pid_from_file "$API_PID_FILE")"
-  if [ -n "$gateway_pid" ] && pid_running "$gateway_pid" && \
-    [ -n "$web_pid" ] && pid_running "$web_pid" && \
-    [ -n "$api_pid" ] && pid_running "$api_pid"; then
+  if [ -n "$gateway_pid" ] && pid_running "$gateway_pid" gateway && \
+    [ -n "$web_pid" ] && pid_running "$web_pid" web && \
+    [ -n "$api_pid" ] && pid_running "$api_pid" backend; then
     return 0
   fi
   return 3
