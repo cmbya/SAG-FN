@@ -175,9 +175,12 @@ pid_matches() {
       ;;
     web)
       [ -r "/proc/$pid/cmdline" ] || return 1
+      [ -r "/proc/$pid/cwd" ] || return 1
+      web_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+      [ "$web_cwd" = "$APP_ROOT/web" ] || return 1
       command_line="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
       case "$command_line" in
-        *"$APP_ROOT/web/server.js"*) return 0 ;;
+        *" server.js"|*" server.js "*) return 0 ;;
       esac
       return 1
       ;;
