@@ -231,7 +231,7 @@ cleanup_web_processes() {
     for process_dir in /proc/[0-9]*; do
       [ -d "$process_dir" ] || continue
       process_pid="${process_dir##*/}"
-      [ "$process_pid" = "$" ] && continue
+      [ "$process_pid" = "$$" ] && continue
       web_process_matches "$process_pid" || continue
       if [ "$process_pid" = "$tracked_pid" ]; then
         log "stopping tracked web process pid=$process_pid"
@@ -444,6 +444,14 @@ start_web() {
     return 0
   fi
   [ -f "$APP_ROOT/web/server.js" ] || { fail "Next.js 服务入口不存在：$APP_ROOT/web/server.js"; return 1; }
+  web_log="$LOG_DIR/webui.log"
+  if [ -s "$web_log" ]; then
+    mv -f "$web_log" "$web_log.prev" 2>/dev/null || true
+  fi
+  : > "$web_log" 2>/dev/null || {
+    fail "无法写入 WebUI 日志：$web_log"
+    return 1
+  }
   log "starting Next.js on 0.0.0.0:$WEB_PORT"
   (
     cd "$APP_ROOT/web" || exit 1
@@ -452,15 +460,22 @@ start_web() {
     export PORT="$WEB_PORT"
     export NEXT_TELEMETRY_DISABLED="1"
     exec "$NODE_BIN" server.js
-  ) >> "$LOG_DIR/webui.log" 2>&1 &
+  ) >> "$web_log" 2>&1 &
   web_pid="$!"
   printf '%s\n' "$web_pid" > "$WEB_PID_FILE"
   log "web pid=$web_pid"
   if ! wait_http "http://127.0.0.1:${WEB_PORT}${BASE_PATH}" "$web_pid" web; then
-    log "web health check failed"
-    tail -n 80 "$LOG_DIR/webui.log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+    web_failure="SAG WebUI 启动失败，请查看 logs/webui.log"
+    if grep -q 'EADDRINUSE' "$web_log" 2>/dev/null; then
+      log "WebUI port $WEB_PORT is already in use by another process"
+      web_failure="WebUI 端口 $WEB_PORT 确实被其他进程占用，请查看 logs/webui.log"
+    else
+      log "web health check failed"
+    fi
+    tail -n 80 "$web_log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
     stop_one web "$WEB_PID_FILE"
     cleanup_web_processes
+    fail "$web_failure"
     return 1
   fi
 }
