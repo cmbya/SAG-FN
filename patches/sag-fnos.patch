@@ -101,8 +101,7 @@ diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
      "octx",
  ):
      datas += copy_metadata(package, recursive=True)
-
-@@ -115,8 +115,11 @@
+@@ -115,8 +115,10 @@
      exclude_binaries=True,
      name="sag-api",
      debug=False,
