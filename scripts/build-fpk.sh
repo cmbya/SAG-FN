@@ -31,15 +31,27 @@ SKIP_PATCH="$(env_value SAG_SKIP_PATCH '0')"
 SKIP_BUILD="$(env_value SAG_SKIP_BUILD '0')"
 RUNNER_TEMP_DIR="$(env_value RUNNER_TEMP "$ROOT/.tmp")"
 GLIBC_MAX="$(env_value GLIBC_MAX '2.35')"
+LANCEDB_COMPAT_VERSION="$(env_value LANCEDB_COMPAT_VERSION '0.38.0')"
+SAG_CPU_SMOKE="$(env_value SAG_CPU_SMOKE '0')"
+SAG_QEMU_CPU="$(env_value SAG_QEMU_CPU 'Nehalem')"
+BUILDER_COMMIT="$(env_value BUILDER_COMMIT '')"
 
 [ -n "$UPSTREAM_TAG" ] || die "UPSTREAM_TAG is required"
 [[ "$LOCAL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid LOCAL_VERSION: $LOCAL_VERSION"
 [[ "$UPSTREAM_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "UPSTREAM_TAG must be the upstream SAG stable tag (for example v1.8.6), not the local package version: $UPSTREAM_TAG"
 [ "$UPSTREAM_TAG" != "$LOCAL_VERSION" ] || die "UPSTREAM_TAG is the upstream SAG tag (for example v1.8.6); $UPSTREAM_TAG is the local package version"
 [[ "$GLIBC_MAX" =~ ^[0-9]+\.[0-9]+$ ]] || die "invalid GLIBC_MAX: $GLIBC_MAX"
+[[ "$LANCEDB_COMPAT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid LANCEDB_COMPAT_VERSION: $LANCEDB_COMPAT_VERSION"
+case "$SAG_CPU_SMOKE" in
+  0|1) ;;
+  *) die "SAG_CPU_SMOKE must be 0 or 1" ;;
+esac
 
 UPSTREAM_VERSION="$(printf '%s' "$UPSTREAM_TAG" | sed 's/^v//')"
 ASSET_NAME="$(printf 'SAG_%s_%s_fnOS_x86.fpk' "$UPSTREAM_VERSION" "$LOCAL_VERSION")"
+if [ -z "$BUILDER_COMMIT" ]; then
+  BUILDER_COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unknown)"
+fi
 
 for command_name in git npm node uv python3 tar md5sum sha256sum gzip sed awk convert file objdump grep sort; do
   require_command "$command_name"
@@ -81,7 +93,44 @@ if [ "$SKIP_BUILD" != "1" ]; then
   (
     cd "$SOURCE_DIR/apps/api"
     uv sync --frozen --extra desktop
-    uv run python -m PyInstaller --clean --noconfirm \
+  )
+  API_PYTHON="$SOURCE_DIR/apps/api/.venv/bin/python"
+  [ -x "$API_PYTHON" ] || die "uv did not create the API virtualenv"
+  uv pip uninstall --python "$API_PYTHON" lancedb
+  uv pip install --python "$API_PYTHON" --no-deps "lancedb-compat==$LANCEDB_COMPAT_VERSION"
+
+  SMOKE_SCRIPT="$WORK_DIR/lancedb-smoke.py"
+  cat > "$SMOKE_SCRIPT" <<'PY'
+import os
+import tempfile
+from importlib.metadata import version
+
+import lancedb
+
+expected = os.environ["LANCEDB_COMPAT_EXPECTED"]
+assert version("lancedb-compat") == expected
+with tempfile.TemporaryDirectory(prefix="sag-lancedb-smoke-") as directory:
+    database = lancedb.connect(directory)
+    table = database.create_table(
+        "smoke",
+        data=[{"vector": [0.0, 1.0], "text": "ok"}],
+    )
+    rows = table.search([0.0, 1.0]).limit(1).to_list()
+    assert rows and rows[0]["text"] == "ok"
+print(f"LanceDB compatibility smoke passed: {expected}")
+PY
+
+  LANCEDB_COMPAT_EXPECTED="$LANCEDB_COMPAT_VERSION" "$API_PYTHON" "$SMOKE_SCRIPT"
+  if [ "$SAG_CPU_SMOKE" = "1" ]; then
+    QEMU_BIN="$(command -v qemu-x86_64 || command -v qemu-x86_64-static || true)"
+    [ -n "$QEMU_BIN" ] || die "SAG_CPU_SMOKE=1 requires qemu-x86_64 or qemu-x86_64-static"
+    LANCEDB_COMPAT_EXPECTED="$LANCEDB_COMPAT_VERSION" QEMU_LD_PREFIX=/ \
+      "$QEMU_BIN" -cpu "$SAG_QEMU_CPU" "$API_PYTHON" "$SMOKE_SCRIPT"
+  fi
+
+  (
+    cd "$SOURCE_DIR/apps/api"
+    "$API_PYTHON" -m PyInstaller --clean --noconfirm \
       --distpath "$SOURCE_DIR/apps/api/dist/desktop" \
       --workpath "$WORK_DIR/pyinstaller" \
       packaging/sag-api.spec
@@ -186,7 +235,8 @@ gzip -t "$OUT_DIR/$ASSET_NAME"
 tar -tzf "$OUT_DIR/$ASSET_NAME" >/dev/null
 
 UPSTREAM_COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
-export ASSET_NAME LOCAL_VERSION UPSTREAM_REPO UPSTREAM_TAG UPSTREAM_VERSION UPSTREAM_COMMIT
+LANCEDB_DISTRIBUTION="lancedb-compat"
+export ASSET_NAME LOCAL_VERSION UPSTREAM_REPO UPSTREAM_TAG UPSTREAM_VERSION UPSTREAM_COMMIT BUILDER_COMMIT LANCEDB_COMPAT_VERSION LANCEDB_DISTRIBUTION
 python3 - "$OUT_DIR/build-info.json" <<'PY'
 import json
 import os
@@ -202,6 +252,10 @@ output = {
     "upstream_tag": os.environ["UPSTREAM_TAG"],
     "upstream_version": os.environ["UPSTREAM_VERSION"],
     "upstream_commit": os.environ["UPSTREAM_COMMIT"],
+    "builder_commit": os.environ["BUILDER_COMMIT"],
+    "lancedb_distribution": os.environ["LANCEDB_DISTRIBUTION"],
+    "lancedb_version": os.environ["LANCEDB_COMPAT_VERSION"],
+    "cpu_baseline": "x86-64-v2",
     "built_at": datetime.now(timezone.utc).isoformat(),
 }
 with open(sys.argv[1], "w", encoding="utf-8") as stream:
@@ -215,6 +269,8 @@ cat > "$OUT_DIR/README.md" <<EOF
 - 本地包版本：$LOCAL_VERSION
 - 上游 SAG 版本：$UPSTREAM_TAG
 - 上游提交：$UPSTREAM_COMMIT
+- 打包源码提交：$BUILDER_COMMIT
+- LanceDB：$LANCEDB_DISTRIBUTION==$LANCEDB_COMPAT_VERSION（x86-64-v2）
 - 架构：x86_64
 - FPK 文件：$ASSET_NAME
 - 默认 WebUI 端口：18088
