@@ -102,3 +102,60 @@ diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
      disable_windowed_traceback=False,
      argv_emulation=False,
      target_arch=None,
+diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
+--- a/apps/api/sag_api/desktop.py
++++ b/apps/api/sag_api/desktop.py
+@@ -3,8 +3,21 @@
+ from __future__ import annotations
+ 
+ import multiprocessing
+ import os
++import traceback
+ 
+-import uvicorn
++
++def _write_boot_error(message: str) -> None:
++    path = os.getenv("SAG_BOOT_LOG", "").strip()
++    if not path:
++        return
++    try:
++        with open(path, "a", encoding="utf-8") as stream:
++            stream.write(message)
++            if not message.endswith("\n"):
++                stream.write("\n")
++    except OSError:
++        pass
++
++
++def _port() -> int:
+
+diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
+--- a/apps/api/sag_api/desktop.py
++++ b/apps/api/sag_api/desktop.py
+@@ -21,15 +34,21 @@
+ def main() -> None:
+     # PyInstaller children re-enter this executable. Dispatch multiprocessing
+     # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
+     # launch a second API server and collide with the desktop sidecar port.
+     multiprocessing.freeze_support()
+-    uvicorn.run(
+-        "sag_api.main:app",
+-        host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
+-        port=_port(),
+-        log_level="info",
+-        access_log=False,
+-    )
++    try:
++        import uvicorn
++
++        uvicorn.run(
++            "sag_api.main:app",
++            host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
++            port=_port(),
++            log_level="info",
++            access_log=False,
++        )
++    except BaseException:
++        _write_boot_error(traceback.format_exc())
++        raise
+
