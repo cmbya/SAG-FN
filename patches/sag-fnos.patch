@@ -88,7 +88,10 @@ index 4c0b317..cb51866 100644
 diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
 --- a/apps/api/packaging/sag-api.spec
 +++ b/apps/api/packaging/sag-api.spec
-@@ -119,6 +119,9 @@
+@@ -117,8 +117,11 @@
+-    debug=False,
++    debug=True,
+     bootloader_ignore_signals=False,
      strip=False,
      upx=False,
 -    console=False,
