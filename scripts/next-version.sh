@@ -18,6 +18,9 @@ if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 IFS=. read -r major minor patch <<< "$current"
+major=$((10#$major))
+minor=$((10#$minor))
+patch=$((10#$patch))
 if [ "$patch" -lt 9 ]; then
   patch=$((patch + 1))
 else
