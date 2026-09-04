@@ -105,7 +105,7 @@ diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
 diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 --- a/apps/api/sag_api/desktop.py
 +++ b/apps/api/sag_api/desktop.py
-@@ -1,37 +1,55 @@
+@@ -1,37 +1,160 @@
 -"""Desktop sidecar entry point."""
 -
 -from __future__ import annotations
@@ -147,9 +147,47 @@ diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 +
 +from __future__ import annotations
 +
++import builtins
 +import multiprocessing
 +import os
++import signal
 +import traceback
++
++_BOOT_PHASE = "desktop.py import"
++_TRACE_IMPORT_PREFIXES = (
++    "sag_api",
++    "sag_agent",
++    "uvicorn",
++    "fastapi",
++    "starlette",
++    "pydantic",
++    "pydantic_core",
++    "sqlalchemy",
++    "numpy",
++    "pandas",
++    "pyarrow",
++    "lancedb",
++    "onnxruntime",
++    "orjson",
++    "uvloop",
++    "httptools",
++    "watchfiles",
++    "litellm",
++    "tokenizers",
++    "tiktoken",
++    "markitdown",
++    "magika",
++    "octx",
++    "zleap",
++    "cryptography",
++    "bcrypt",
++    "cffi",
++    "_cffi_backend",
++    "aiohttp",
++    "lxml",
++    "PIL",
++    "pypdfium2",
++)
 +
 +
 +def _write_boot_error(message: str) -> None:
@@ -163,6 +201,53 @@ diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 +                stream.write("\n")
 +    except OSError:
 +        pass
++
++
++def _set_boot_phase(phase: str) -> None:
++    global _BOOT_PHASE
++    _BOOT_PHASE = phase
++    _write_boot_error(f"[SAG boot] phase={phase}")
++
++
++def _fatal_signal(signum: int, _frame) -> None:
++    # SIGILL is synchronous and bypasses Python exception handling. Record the
++    # last import/startup phase before terminating with the original status.
++    _write_boot_error(f"[SAG boot] fatal signal={signum} phase={_BOOT_PHASE}")
++    os._exit(128 + signum)
++
++
++try:
++    signal.signal(signal.SIGILL, _fatal_signal)
++except (AttributeError, OSError, ValueError):
++    pass
++_write_boot_error(f"[SAG boot] phase={_BOOT_PHASE}")
++
++
++def _is_trace_import(name: str, level: int) -> bool:
++    if level != 0:
++        return False
++    return any(name == prefix or name.startswith(prefix + ".") for prefix in _TRACE_IMPORT_PREFIXES)
++
++
++def _install_import_trace():
++    original_import = builtins.__import__
++
++    def traced_import(name, globals=None, locals=None, fromlist=(), level=0):
++        traced = _is_trace_import(name, level)
++        if traced:
++            _set_boot_phase(f"import {name}")
++        try:
++            imported = original_import(name, globals, locals, fromlist, level)
++        except BaseException:
++            if traced:
++                _write_boot_error(f"[SAG boot] import failed {name}")
++            raise
++        if traced:
++            _write_boot_error(f"[SAG boot] imported {name}")
++        return imported
++
++    builtins.__import__ = traced_import
++    return original_import
 +
 +
 +def _port() -> int:
@@ -181,15 +266,35 @@ diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 +    # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
 +    # launch a second API server and collide with the desktop sidecar port.
 +    multiprocessing.freeze_support()
++    import_original = _install_import_trace()
 +    try:
++        _set_boot_phase("import uvicorn")
 +        import uvicorn
 +
++        _set_boot_phase("uvicorn imported")
++        _set_boot_phase("import sag_api.main")
++        from sag_api.main import app
++
++        _set_boot_phase("sag_api.main imported")
++    except BaseException:
++        _write_boot_error(traceback.format_exc())
++        raise
++    finally:
++        builtins.__import__ = import_original
++
++    try:
++        _set_boot_phase("uvicorn.run")
++        # Force pure-Python asyncio + h11. This avoids optional uvloop and
++        # httptools CPU-specific code on older fnOS NAS processors.
 +        uvicorn.run(
-+            "sag_api.main:app",
++            app,
 +            host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
 +            port=_port(),
 +            log_level="info",
 +            access_log=False,
++            loop="asyncio",
++            http="h11",
++            ws="none",
 +        )
 +    except BaseException:
 +        _write_boot_error(traceback.format_exc())
