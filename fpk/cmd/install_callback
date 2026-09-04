@@ -3,6 +3,7 @@ set -eu
 
 APPDEST="${TRIM_APPDEST:-}"
 [ -n "$APPDEST" ] || exit 0
+"$APPDEST/bin/sag-service" cleanup
 "$APPDEST/bin/sag-service" configure
 chmod 700 "${TRIM_PKGETC:-$APPDEST/../etc}" "${TRIM_PKGVAR:-$APPDEST/../var}" 2>/dev/null || true
 exit 0

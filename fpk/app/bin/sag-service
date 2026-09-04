@@ -164,6 +164,29 @@ pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
+web_process_matches() {
+  candidate_pid="$1"
+  case "$candidate_pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ -r "/proc/$candidate_pid/cmdline" ] || return 1
+  web_cwd="$(readlink "/proc/$candidate_pid/cwd" 2>/dev/null || true)"
+  case "$web_cwd" in
+    "$APP_ROOT/web"|"$APP_ROOT/web (deleted)") ;;
+    *) return 1 ;;
+  esac
+  web_exe="$(readlink "/proc/$candidate_pid/exe" 2>/dev/null || true)"
+  case "${web_exe##*/}" in
+    node|nodejs) ;;
+    *) return 1 ;;
+  esac
+  web_command_line="$(tr '\000' ' ' < "/proc/$candidate_pid/cmdline" 2>/dev/null || true)"
+  case "$web_command_line" in
+    *" server.js"*) return 0 ;;
+  esac
+  return 1
+}
+
 pid_matches() {
   pid="$1"
   label="$2"
@@ -174,15 +197,7 @@ pid_matches() {
       [ "$actual_exe" = "$expected" ]
       ;;
     web)
-      [ -r "/proc/$pid/cmdline" ] || return 1
-      [ -r "/proc/$pid/cwd" ] || return 1
-      web_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
-      [ "$web_cwd" = "$APP_ROOT/web" ] || return 1
-      command_line="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-      case "$command_line" in
-        *" server.js"|*" server.js "*) return 0 ;;
-      esac
-      return 1
+      web_process_matches "$pid"
       ;;
     gateway)
       [ -r "/proc/$pid/cmdline" ] || return 1
@@ -207,6 +222,39 @@ pid_running() {
     return $?
   fi
   return 0
+}
+
+cleanup_web_processes() {
+  (
+    tracked_pid="$(pid_from_file "$WEB_PID_FILE")"
+    cleaned=0
+    for process_dir in /proc/[0-9]*; do
+      [ -d "$process_dir" ] || continue
+      process_pid="${process_dir##*/}"
+      [ "$process_pid" = "$" ] && continue
+      web_process_matches "$process_pid" || continue
+      if [ "$process_pid" = "$tracked_pid" ]; then
+        log "stopping tracked web process pid=$process_pid"
+      else
+        log "stopping orphaned web process pid=$process_pid"
+      fi
+      kill -TERM "$process_pid" 2>/dev/null || true
+      cleanup_count=0
+      while pid_alive "$process_pid" && web_process_matches "$process_pid" && [ "$cleanup_count" -lt 15 ]; do
+        sleep 1
+        cleanup_count=$((cleanup_count + 1))
+      done
+      if pid_alive "$process_pid" && web_process_matches "$process_pid"; then
+        log "web process pid=$process_pid did not stop gracefully; sending SIGKILL"
+        kill -KILL "$process_pid" 2>/dev/null || true
+      fi
+      cleaned=1
+    done
+    rm -f "$WEB_PID_FILE" 2>/dev/null || true
+    if [ "$cleaned" -eq 1 ]; then
+      log "SAG WebUI process cleanup completed"
+    fi
+  )
 }
 
 clean_stale_pid() {
@@ -411,6 +459,8 @@ start_web() {
   if ! wait_http "http://127.0.0.1:${WEB_PORT}${BASE_PATH}" "$web_pid" web; then
     log "web health check failed"
     tail -n 80 "$LOG_DIR/webui.log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+    stop_one web "$WEB_PID_FILE"
+    cleanup_web_processes
     return 1
   fi
 }
@@ -488,6 +538,7 @@ start_app() {
   init_config || return 1
   load_config
   find_node || { fail "找不到 Node.js 运行时，请先安装 fnOS 依赖 nodejs_v22"; return 1; }
+  cleanup_web_processes
   log "node=$NODE_BIN version=$($NODE_BIN --version 2>/dev/null || printf unknown) web_port=$WEB_PORT api_port=$API_PORT"
   start_api || {
     fail "SAG 后端启动失败，请查看 logs/backend.log"
@@ -502,6 +553,7 @@ stop_app() {
   log "----- stop requested -----"
   stop_one gateway "$GATEWAY_PID_FILE"
   stop_one web "$WEB_PID_FILE"
+  cleanup_web_processes
   stop_one backend "$API_PID_FILE"
   rm -f "$APP_ROOT/app.sock" 2>/dev/null || true
   log "SAG stopped"
@@ -536,6 +588,7 @@ configure_app() {
 
 case "${1:-}" in
   init) init_config ;;
+  cleanup) ensure_dirs && cleanup_web_processes ;;
   configure) configure_app ;;
   start) start_app ;;
   stop) stop_app ;;

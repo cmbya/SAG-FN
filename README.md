@@ -44,6 +44,7 @@ Release 标题和说明也会显示上游版本、本地包版本、上游提交
 - FastAPI 后端仅监听 127.0.0.1:18188。
 - WebUI 通过 fnOS Unix socket 网关访问 /app/SAG/。
 - 配置、SQLite、LanceDB、上传文件和日志保存在持久化数据目录。
+- 安装、升级、启动和停止时会自动清理仅属于 SAG 工作目录的遗留 Next.js 进程，避免旧进程占用 WebUI 端口。
 - 升级时保留持久化数据；卸载回调只停止服务，不主动删除数据。
 - 后端启动失败时可查看 `@appdata/SAG/logs/backend.log` 和 `sag.log`。
 

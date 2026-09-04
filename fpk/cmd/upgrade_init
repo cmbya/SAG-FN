@@ -4,10 +4,12 @@ set -u
 APPDEST="${TRIM_APPDEST:-}"
 PKGVAR="${TRIM_PKGVAR:-${APPDEST%/target}/var}"
 mkdir -p "$PKGVAR/run" 2>/dev/null || true
+was_running=0
 if [ -x "$APPDEST/bin/sag-service" ] && "$APPDEST/bin/sag-service" status >/dev/null 2>&1; then
-  printf '1\n' > "$PKGVAR/run/upgrade-was-running" 2>/dev/null || true
+  was_running=1
+fi
+printf '%s\n' "$was_running" > "$PKGVAR/run/upgrade-was-running" 2>/dev/null || true
+if [ -x "$APPDEST/bin/sag-service" ]; then
   "$APPDEST/bin/sag-service" stop >/dev/null 2>&1 || true
-else
-  printf '0\n' > "$PKGVAR/run/upgrade-was-running" 2>/dev/null || true
 fi
 exit 0

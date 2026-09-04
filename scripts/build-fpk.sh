@@ -315,6 +315,7 @@ cat > "$OUT_DIR/README.md" <<EOF
 本包使用 Next.js standalone 前端和 PyInstaller 原生后端，不需要 Docker。
 后端只监听本机回环地址，前端通过 fnOS Unix socket 网关访问。
 配置、SQLite、LanceDB、上传文件和日志保存在应用持久化数据目录，升级时保留。
+安装、升级、启动和停止会自动清理仅属于 SAG 的遗留 Next.js 进程，避免旧进程持续占用 WebUI 端口。
 EOF
 
 (cd "$OUT_DIR" && sha256sum "$ASSET_NAME" > SHA256SUMS)

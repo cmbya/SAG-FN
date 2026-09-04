@@ -4,6 +4,7 @@ set -eu
 APPDEST="${TRIM_APPDEST:-}"
 [ -n "$APPDEST" ] || exit 0
 PKGVAR="${TRIM_PKGVAR:-${APPDEST%/target}/var}"
+"$APPDEST/bin/sag-service" cleanup
 "$APPDEST/bin/sag-service" init
 was_running="$(sed -n '1p' "$PKGVAR/run/upgrade-was-running" 2>/dev/null || printf 0)"
 rm -f "$PKGVAR/run/upgrade-was-running" 2>/dev/null || true
