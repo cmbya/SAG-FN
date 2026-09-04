@@ -10,14 +10,15 @@
 - 自动排除 draft、prerelease、beta 和 rc 版本。
 - 发现上游新版本后自动编译、校验并发布 GitHub Pre-release。
 - 也可以在 Actions 中手动运行：`upstream_tag` 填上游标签，`local_version` 填本地 FPK 版本；`local_version` 留空时会根据 `version.json` 自动递增，填写后则使用填写的版本号。
-- 定时任务在上游没有变化时不会重复编译；手动运行即使上游没有变化，`local_version` 留空也会递增一个本地版本。
-- 工作流需要仓库设置允许 Actions 使用 GITHUB_TOKEN 写入内容和创建 Release。
-- 后端编译固定使用 `ubuntu-22.04`，避免 `ubuntu-latest` 的新 glibc 进入 PyInstaller 程序。
+- 定时任务在上游没有变化时不会重复编译；修改打包器、补丁或 FPK 外壳时会自动触发一次重建。手动运行即使上游没有变化，`local_version` 留空也会递增一个本地版本。
+- 只有发布作业需要 `GITHUB_TOKEN` 写权限，编译作业使用只读权限且不保留 checkout 凭据。
+- 后端编译固定使用 `ubuntu-22.04`，避免 `ubuntu-latest` 的新 glibc 进入 PyInstaller 程序；Action 同时使用 QEMU 验证无 AVX2 基线。
 - 打包前会检查后端 ELF 的 glibc 版本需求，超过 `GLIBC_2.35` 会直接停止发布。
 - 后端启动日志会写入 `backend.log`；健康检查失败时会在 `sag.log` 记录进程状态、可执行文件校验和动态库诊断。
 - 后端固定使用纯 asyncio + h11，避免旧版 NAS 在 uvloop/httptools 中触发 CPU 指令兼容问题。
-- fnOS 启动阶段不加载 LanceDB 本地扩展；存储升级探测只读取 SQLite 和 Lance 表目录，升级校验和迁移模块仅在实际处理旧数据时才延迟导入 LanceDB，避免 Intel Celeron J4125 等旧 CPU 在 `import lancedb` 阶段卡死。
-- 后端启动会记录 `[SAG boot] phase=...`；如果仍以退出码 132（SIGILL）退出，`sag.log` 还会记录 NAS 的 CPU 型号和 flags，用于定位具体本地库。
+- 后端使用 `lancedb-compat==0.38.0`（x86-64-v2）替代默认 Haswell/AVX2 wheel，兼容 Intel Celeron J4125；构建阶段会在 QEMU Nehalem 基线下执行 LanceDB 导入、建表和向量查询测试。
+- 只有真正执行旧数据迁移或向量存储时才加载 LanceDB；这个延迟加载是启动优化，CPU 兼容性由兼容 wheel 和构建冒烟测试保证。
+- PyInstaller 保留 console 输出，后端启动失败时可直接查看 `backend.log` 和 `sag.log`。
 
 GitHub Actions 的 cron 使用 UTC，因此北京时间 10:00 对应 02:00。
 
@@ -54,7 +55,7 @@ Release 标题和说明也会显示上游版本、本地包版本、上游提交
 
 脚本会自动拉取对应上游 tag，应用 patches/sag-fnos.patch，编译前后端，生成 FPK、build-info.json、README.md 和 SHA256SUMS。
 
-本地诊断时可以指定已有的上游工作树：
+本地构建如需执行低指令集测试，请安装 `qemu-user-static`，并设置 `SAG_CPU_SMOKE=1`；本地诊断时可以指定已有的上游工作树：
 
     SAG_SOURCE_DIR=/path/to/SAG SAG_SKIP_PATCH=1 SAG_SKIP_BUILD=1 \
       UPSTREAM_TAG=v1.8.6 LOCAL_VERSION=0.1.0 ./scripts/build-fpk.sh
