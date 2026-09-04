@@ -87,7 +87,7 @@ if [ "$SKIP_BUILD" != "1" ]; then
     npm ci --no-audit --no-fund
     NEXT_PUBLIC_API_BASE="/app/SAG" \
       SAG_BASE_PATH="/app/SAG" \
-      SAG_INTERNAL_API_URL="http://127.0.0.1:18089" \
+      SAG_INTERNAL_API_URL="http://127.0.0.1:18188" \
       npm run build
   )
   (

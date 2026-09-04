@@ -57,7 +57,7 @@ index 4c0b317..cb51866 100644
  import createNextIntlPlugin from "next-intl/plugin";
  
  const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
-+const internalApiBase = (process.env.SAG_INTERNAL_API_URL || "http://127.0.0.1:18089").replace(/\/+$/, "");
++const internalApiBase = (process.env.SAG_INTERNAL_API_URL || "http://127.0.0.1:18188").replace(/\/+$/, "");
 +const basePath = (process.env.SAG_BASE_PATH || "").replace(/\/+$/, "");
  
  /** @type {import('next').NextConfig} */
