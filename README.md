@@ -15,6 +15,8 @@
 - 后端编译固定使用 `ubuntu-22.04`，避免 `ubuntu-latest` 的新 glibc 进入 PyInstaller 程序。
 - 打包前会检查后端 ELF 的 glibc 版本需求，超过 `GLIBC_2.35` 会直接停止发布。
 - 后端启动日志会写入 `backend.log`；健康检查失败时会在 `sag.log` 记录进程状态、可执行文件校验和动态库诊断。
+- 后端固定使用纯 asyncio + h11，避免旧版 NAS 在 uvloop/httptools 中触发 CPU 指令兼容问题。
+- 后端启动会记录 `[SAG boot] phase=...`；如果仍以退出码 132（SIGILL）退出，`sag.log` 还会记录 NAS 的 CPU 型号和 flags，用于定位具体本地库。
 
 GitHub Actions 的 cron 使用 UTC，因此北京时间 10:00 对应 02:00。
 
