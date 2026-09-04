@@ -1,6 +1,14 @@
 name: Build SAG fnOS FPK
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-fpk.yml"
+      - "fpk/**"
+      - "patches/**"
+      - "scripts/**"
   schedule:
     # GitHub Actions cron uses UTC; this is 10:00 every day in UTC+8.
     - cron: "0 2 * * *"
@@ -16,7 +24,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: sag-fnos-release
@@ -37,9 +45,12 @@ jobs:
       asset_name: ${{ steps.resolve.outputs.asset_name }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       release_title: ${{ steps.resolve.outputs.release_title }}
+      builder_commit: ${{ steps.resolve.outputs.builder_commit }}
     steps:
       - name: Checkout builder
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Resolve latest formal release
         id: resolve
@@ -55,10 +66,18 @@ jobs:
           current_tag="$(jq -r '.upstream_tag // ""' version.json)"
           current_release_tag="$(jq -r '.release_tag // ""' version.json)"
           requested_local="$INPUT_LOCAL_VERSION"
+          builder_commit="${GITHUB_SHA:-unknown}"
 
           if [ -n "$requested_local" ] && [[ ! "$requested_local" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Unsupported local version: $requested_local (expected X.Y.Z)" >&2
             exit 1
+          fi
+          if [ -n "$requested_local" ] && [ "$requested_local" != "$current_local" ]; then
+            lowest_version="$(printf '%s\n%s\n' "$current_local" "$requested_local" | sort -V | head -n 1)"
+            if [ "$lowest_version" = "$requested_local" ]; then
+              echo "Requested local version $requested_local is lower than current $current_local" >&2
+              exit 1
+            fi
           fi
 
           if [ -n "$INPUT_UPSTREAM_TAG" ]; then
@@ -94,6 +113,13 @@ jobs:
               local_version="$(./scripts/next-version.sh "$current_local")"
             fi
             echo "Manual run without local_version; auto-incrementing to $local_version."
+          elif [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+            if [ -z "$current_tag" ]; then
+              local_version="0.1.0"
+            else
+              local_version="$(./scripts/next-version.sh "$current_local")"
+            fi
+            echo "Packaging sources changed; rebuilding as local version $local_version."
           elif [ "$upstream_tag" = "$current_tag" ]; then
             if [ -n "$current_release_tag" ] && gh release view "$current_release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               should_build=false
@@ -120,6 +146,7 @@ jobs:
             printf 'asset_name=%s\n' "$asset_name"
             printf 'release_tag=%s\n' "$release_tag"
             printf 'release_title=%s\n' "$release_title"
+            printf 'builder_commit=%s\n' "$builder_commit"
           } >> "$GITHUB_OUTPUT"
 
           if [ "$should_build" = "true" ]; then
@@ -138,6 +165,8 @@ jobs:
     steps:
       - name: Checkout builder
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -157,7 +186,7 @@ jobs:
       - name: Install image tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils file imagemagick
+          sudo apt-get install -y binutils file imagemagick qemu-user-static
 
       - name: Build native FPK
         env:
@@ -166,6 +195,10 @@ jobs:
           LOCAL_VERSION: ${{ needs.prepare.outputs.local_version }}
           GLIBC_MAX: "2.35"
           OUT_DIR: dist
+          LANCEDB_COMPAT_VERSION: "0.38.0"
+          SAG_CPU_SMOKE: "1"
+          SAG_QEMU_CPU: "Nehalem"
+          BUILDER_COMMIT: ${{ needs.prepare.outputs.builder_commit }}
         run: ./scripts/build-fpk.sh
 
       - name: Upload build output
@@ -181,6 +214,8 @@ jobs:
     needs: [prepare, build]
     if: ${{ needs.prepare.outputs.should_build == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout builder
         uses: actions/checkout@v4
@@ -194,12 +229,14 @@ jobs:
       - name: Verify output
         env:
           ASSET_NAME: ${{ needs.prepare.outputs.asset_name }}
+          BUILDER_COMMIT: ${{ needs.prepare.outputs.builder_commit }}
         run: |
           set -euo pipefail
           test -s "dist/$ASSET_NAME"
           test -s dist/SHA256SUMS
           (cd dist && sha256sum -c SHA256SUMS)
           test "$(jq -r '.asset_name' dist/build-info.json)" = "$ASSET_NAME"
+          test "$(jq -r '.builder_commit' dist/build-info.json)" = "$BUILDER_COMMIT"
 
       - name: Create or update release
         env:
@@ -207,6 +244,7 @@ jobs:
           ASSET_NAME: ${{ needs.prepare.outputs.asset_name }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           RELEASE_TITLE: ${{ needs.prepare.outputs.release_title }}
+          BUILDER_COMMIT: ${{ needs.prepare.outputs.builder_commit }}
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -221,7 +259,7 @@ jobs:
             gh release create "$RELEASE_TAG" \
               "dist/$ASSET_NAME" dist/SHA256SUMS \
               --repo "$GITHUB_REPOSITORY" \
-              --target main \
+              --target "$BUILDER_COMMIT" \
               --title "$RELEASE_TITLE" \
               --notes-file dist/README.md \
               --prerelease
@@ -233,6 +271,7 @@ jobs:
           UPSTREAM_VERSION: ${{ needs.prepare.outputs.upstream_version }}
           LOCAL_VERSION: ${{ needs.prepare.outputs.local_version }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          BUILDER_COMMIT: ${{ needs.prepare.outputs.builder_commit }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -250,12 +289,14 @@ jobs:
             --arg upstream_commit "$upstream_commit" \
             --arg release_tag "$RELEASE_TAG" \
             --arg last_built_at "$built_at" \
+            --arg builder_commit "$BUILDER_COMMIT" \
             '.local_version = $local_version
              | .upstream_tag = $upstream_tag
              | .upstream_version = $upstream_version
              | .upstream_commit = $upstream_commit
              | .release_tag = $release_tag
-             | .last_built_at = $last_built_at' \
+             | .last_built_at = $last_built_at
+             | .builder_commit = $builder_commit' \
             version.json > "$tmp_file"
           mv -f "$tmp_file" version.json
 
