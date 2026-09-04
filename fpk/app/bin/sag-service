@@ -200,6 +200,24 @@ backend_diagnostics() {
   backend_pid="$2"
   log "backend diagnostics begin"
   log "backend path=$backend_path"
+  backend_dir="${backend_path%/*}"
+  if [ -r "/proc/cpuinfo" ]; then
+    cpu_model="$(awk -F: '
+      /^model name[[:space:]]*:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }
+      /^Processor[[:space:]]*:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }
+      /^Hardware[[:space:]]*:/ { gsub(/^[[:space:]]+/, "", $2); print $2; exit }
+    ' /proc/cpuinfo 2>/dev/null || true)"
+    cpu_flags="$(awk -F: '
+      /^flags[[:space:]]*:/ || /^Features[[:space:]]*:/ {
+        gsub(/^[[:space:]]+/, "", $2); print $2; exit
+      }
+    ' /proc/cpuinfo 2>/dev/null || true)"
+    [ -n "$cpu_model" ] || cpu_model="unknown"
+    [ -n "$cpu_flags" ] || cpu_flags="unknown"
+    cpu_arch="$(uname -m 2>/dev/null || printf unknown)"
+    log "cpu arch=$cpu_arch model=$cpu_model"
+    log "cpu flags=$cpu_flags"
+  fi
   if command -v file >/dev/null 2>&1; then
     file_description="$(file -b "$backend_path" 2>&1 || true)"
     log "backend file=$file_description"
