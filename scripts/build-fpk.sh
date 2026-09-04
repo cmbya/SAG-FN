@@ -309,6 +309,7 @@ cat > "$OUT_DIR/README.md" <<EOF
 - 架构：x86_64
 - FPK 文件：$ASSET_NAME
 - 默认 WebUI 端口：18000
+- 从旧版升级时，如配置仍为 18088，会自动迁移到 18000
 - 依赖：fnOS nodejs_v22
 
 本包使用 Next.js standalone 前端和 PyInstaller 原生后端，不需要 Docker。

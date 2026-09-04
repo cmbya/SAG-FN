@@ -39,7 +39,7 @@ Release 标题和说明也会显示上游版本、本地包版本、上游提交
 ## fnOS 运行约定
 
 - 架构：x86_64，manifest platform=x86。
-- 默认 WebUI 端口：18000，可在应用中心修改。
+- 默认 WebUI 端口：18000，可在应用中心修改；从旧版升级时，如配置仍为 18088，会自动迁移到 18000。
 - 运行依赖：nodejs_v22。
 - FastAPI 后端仅监听 127.0.0.1:18089。
 - WebUI 通过 fnOS Unix socket 网关访问 /app/SAG/。

@@ -15,6 +15,7 @@ API_PID_FILE="$RUN_DIR/api.pid"
 GATEWAY_PID_FILE="$RUN_DIR/gateway.pid"
 ERROR_FILE="${TRIM_TEMP_LOGFILE:-}"
 WEB_PORT="18000"
+LEGACY_WEB_PORT="18088"
 API_PORT="18089"
 BASE_PATH="/app/SAG/"
 
@@ -98,9 +99,17 @@ init_config() {
   configured_secret="$(config_value SAG_SECRET_KEY)"
   [ -n "$configured_port" ] || configured_port="$WEB_PORT"
   [ -n "$configured_secret" ] || configured_secret="$(new_secret)"
+  migrated_port=0
+  if [ "$configured_port" = "$LEGACY_WEB_PORT" ]; then
+    configured_port="$WEB_PORT"
+    migrated_port=1
+  fi
   valid_port "$configured_port" || configured_port="$WEB_PORT"
-  if [ ! -s "$CONFIG_FILE" ] || [ -z "$(config_value SAG_SECRET_KEY)" ]; then
+  if [ ! -s "$CONFIG_FILE" ] || [ -z "$(config_value SAG_SECRET_KEY)" ] || [ "$migrated_port" -eq 1 ]; then
     write_config "$configured_port" "$configured_secret" || return 1
+    if [ "$migrated_port" -eq 1 ]; then
+      log "WebUI port migrated from $LEGACY_WEB_PORT to $WEB_PORT"
+    fi
   fi
   WEB_PORT="$configured_port"
 }
