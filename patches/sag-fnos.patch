@@ -88,221 +88,46 @@ index 4c0b317..cb51866 100644
 diff --git a/apps/api/packaging/sag-api.spec b/apps/api/packaging/sag-api.spec
 --- a/apps/api/packaging/sag-api.spec
 +++ b/apps/api/packaging/sag-api.spec
-@@ -117,8 +117,11 @@
--    debug=False,
-+    debug=True,
+@@ -70,11 +70,11 @@
+ for package in (
+     "jieba-py",
+     "sag-api",
+     "zleap-sag",
+-    "lancedb",
++    "lancedb-compat",
+     "litellm",
+     "markitdown",
+     "mcp",
+     "octx",
+ ):
+     datas += copy_metadata(package, recursive=True)
+
+@@ -115,8 +115,11 @@
+     exclude_binaries=True,
+     name="sag-api",
+     debug=False,
      bootloader_ignore_signals=False,
      strip=False,
      upx=False,
 -    console=False,
 +    # fnOS runs the sidecar as a service and redirects stdout/stderr to the
-+    # package log. Keep the console enabled so early import and loader errors
-+    # are visible instead of producing an empty backend.log.
++    # package log. Keep the console enabled so early loader errors are visible.
 +    console=True,
      disable_windowed_traceback=False,
-     argv_emulation=False,
-     target_arch=None,
 diff --git a/apps/api/sag_api/desktop.py b/apps/api/sag_api/desktop.py
 --- a/apps/api/sag_api/desktop.py
 +++ b/apps/api/sag_api/desktop.py
-@@ -1,37 +1,160 @@
--"""Desktop sidecar entry point."""
--
--from __future__ import annotations
--
--import multiprocessing
--import os
--
--import uvicorn
--
--
--def _port() -> int:
--    value = os.getenv("SAG_DESKTOP_PORT", "8000")
--    try:
--        port = int(value)
--    except ValueError as error:
--        raise RuntimeError("SAG_DESKTOP_PORT must be an integer") from error
--    if not 1 <= port <= 65535:
--        raise RuntimeError("SAG_DESKTOP_PORT must be between 1 and 65535")
--    return port
--
--
--def main() -> None:
--    # PyInstaller children re-enter this executable. Dispatch multiprocessing
--    # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
--    # launch a second API server and collide with the desktop sidecar port.
--    multiprocessing.freeze_support()
--    uvicorn.run(
--        "sag_api.main:app",
--        host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
--        port=_port(),
--        log_level="info",
--        access_log=False,
--    )
--
--
--if __name__ == "__main__":
--    main()
-+"""Desktop sidecar entry point."""
-+
-+from __future__ import annotations
-+
-+import builtins
-+import multiprocessing
-+import os
-+import signal
-+import traceback
-+
-+_BOOT_PHASE = "desktop.py import"
-+_TRACE_IMPORT_PREFIXES = (
-+    "sag_api",
-+    "sag_agent",
-+    "uvicorn",
-+    "fastapi",
-+    "starlette",
-+    "pydantic",
-+    "pydantic_core",
-+    "sqlalchemy",
-+    "numpy",
-+    "pandas",
-+    "pyarrow",
-+    "lancedb",
-+    "onnxruntime",
-+    "orjson",
-+    "uvloop",
-+    "httptools",
-+    "watchfiles",
-+    "litellm",
-+    "tokenizers",
-+    "tiktoken",
-+    "markitdown",
-+    "magika",
-+    "octx",
-+    "zleap",
-+    "cryptography",
-+    "bcrypt",
-+    "cffi",
-+    "_cffi_backend",
-+    "aiohttp",
-+    "lxml",
-+    "PIL",
-+    "pypdfium2",
-+)
-+
-+
-+def _write_boot_error(message: str) -> None:
-+    path = os.getenv("SAG_BOOT_LOG", "").strip()
-+    if not path:
-+        return
-+    try:
-+        with open(path, "a", encoding="utf-8") as stream:
-+            stream.write(message)
-+            if not message.endswith("\n"):
-+                stream.write("\n")
-+    except OSError:
-+        pass
-+
-+
-+def _set_boot_phase(phase: str) -> None:
-+    global _BOOT_PHASE
-+    _BOOT_PHASE = phase
-+    _write_boot_error(f"[SAG boot] phase={phase}")
-+
-+
-+def _fatal_signal(signum: int, _frame) -> None:
-+    # SIGILL is synchronous and bypasses Python exception handling. Record the
-+    # last import/startup phase before terminating with the original status.
-+    _write_boot_error(f"[SAG boot] fatal signal={signum} phase={_BOOT_PHASE}")
-+    os._exit(128 + signum)
-+
-+
-+try:
-+    signal.signal(signal.SIGILL, _fatal_signal)
-+except (AttributeError, OSError, ValueError):
-+    pass
-+_write_boot_error(f"[SAG boot] phase={_BOOT_PHASE}")
-+
-+
-+def _is_trace_import(name: str, level: int) -> bool:
-+    if level != 0:
-+        return False
-+    return any(name == prefix or name.startswith(prefix + ".") for prefix in _TRACE_IMPORT_PREFIXES)
-+
-+
-+def _install_import_trace():
-+    original_import = builtins.__import__
-+
-+    def traced_import(name, globals=None, locals=None, fromlist=(), level=0):
-+        traced = _is_trace_import(name, level)
-+        if traced:
-+            _set_boot_phase(f"import {name}")
-+        try:
-+            imported = original_import(name, globals, locals, fromlist, level)
-+        except BaseException:
-+            if traced:
-+                _write_boot_error(f"[SAG boot] import failed {name}")
-+            raise
-+        if traced:
-+            _write_boot_error(f"[SAG boot] imported {name}")
-+        return imported
-+
-+    builtins.__import__ = traced_import
-+    return original_import
-+
-+
-+def _port() -> int:
-+    value = os.getenv("SAG_DESKTOP_PORT", "8000")
-+    try:
-+        port = int(value)
-+    except ValueError as error:
-+        raise RuntimeError("SAG_DESKTOP_PORT must be an integer") from error
-+    if not 1 <= port <= 65535:
-+        raise RuntimeError("SAG_DESKTOP_PORT must be between 1 and 65535")
-+    return port
-+
-+
-+def main() -> None:
-+    # PyInstaller children re-enter this executable. Dispatch multiprocessing
-+    # bootstrap arguments before Uvicorn starts, otherwise an OCTX worker would
-+    # launch a second API server and collide with the desktop sidecar port.
-+    multiprocessing.freeze_support()
-+    import_original = _install_import_trace()
-+    try:
-+        _set_boot_phase("import uvicorn")
-+        import uvicorn
-+
-+        _set_boot_phase("uvicorn imported")
-+        _set_boot_phase("import sag_api.main")
-+        from sag_api.main import app
-+
-+        _set_boot_phase("sag_api.main imported")
-+    except BaseException:
-+        _write_boot_error(traceback.format_exc())
-+        raise
-+    finally:
-+        builtins.__import__ = import_original
-+
-+    try:
-+        _set_boot_phase("uvicorn.run")
-+        # Force pure-Python asyncio + h11. This avoids optional uvloop and
-+        # httptools CPU-specific code on older fnOS NAS processors.
-+        uvicorn.run(
-+            app,
-+            host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
-+            port=_port(),
-+            log_level="info",
-+            access_log=False,
-+            loop="asyncio",
-+            http="h11",
-+            ws="none",
-+        )
-+    except BaseException:
-+        _write_boot_error(traceback.format_exc())
-+        raise
-+
-+
-+if __name__ == "__main__":
-+    main()
+@@ -27,7 +27,10 @@
+     uvicorn.run(
+         "sag_api.main:app",
+         host=os.getenv("SAG_DESKTOP_HOST", "127.0.0.1"),
+         port=_port(),
+         log_level="info",
+         access_log=False,
++        loop="asyncio",
++        http="h11",
++        ws="none",
+     )
 diff --git a/apps/api/sag_api/upgrades/detector.py b/apps/api/sag_api/upgrades/detector.py
 --- a/apps/api/sag_api/upgrades/detector.py
 +++ b/apps/api/sag_api/upgrades/detector.py
