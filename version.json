@@ -1,10 +1,10 @@
 {
   "app": "SAG",
-  "local_version": "0.1.7",
+  "local_version": "0.1.8",
   "upstream_tag": "v1.8.6",
   "upstream_version": "1.8.6",
   "upstream_commit": "78ff84bbd740fe91f9619148d6d84fdcee71bdfc",
-  "release_tag": "fnos-v1.8.6-0.1.7",
-  "last_built_at": "2026-09-04T06:21:14.149178+00:00",
-  "builder_commit": "9686fa1f1218c6be4fbf9165c5917d45bb80b7ee"
+  "release_tag": "fnos-v1.8.6-0.1.8",
+  "last_built_at": "2026-09-04T06:31:59.222607+00:00",
+  "builder_commit": "485bcd3ae289732feb6f267353cc0a52a1f64d11"
 }
