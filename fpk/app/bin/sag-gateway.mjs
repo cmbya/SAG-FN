@@ -4,7 +4,7 @@ import path from "node:path";
 
 const socketPath = process.env.SAG_GATEWAY_SOCKET;
 const targetHost = process.env.SAG_WEB_HOST || "127.0.0.1";
-const targetPort = Number(process.env.SAG_WEB_PORT || 18000);
+const targetPort = Number(process.env.SAG_WEB_PORT || 18199);
 
 if (!socketPath) throw new Error("SAG_GATEWAY_SOCKET is required");
 if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {

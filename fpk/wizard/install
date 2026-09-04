@@ -6,12 +6,12 @@
         "type": "text",
         "field": "wizard_web_port",
         "label": "WebUI 端口",
-        "default": "18000",
+        "default": "18199",
         "rules": []
       },
       {
         "type": "tips",
-        "helpText": "SAG 默认使用 18000 端口。首次打开后，在页面中完成本地用户初始化；模型、Embedding 和文档解析设置均在 SAG 页面内配置。后端仅监听本机回环地址。"
+        "helpText": "SAG 默认使用 18199 端口。首次打开后，在页面中完成本地用户初始化；模型、Embedding 和文档解析设置均在 SAG 页面内配置。后端仅监听本机回环地址。"
       }
     ]
   }
