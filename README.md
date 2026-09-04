@@ -16,6 +16,7 @@
 - 打包前会检查后端 ELF 的 glibc 版本需求，超过 `GLIBC_2.35` 会直接停止发布。
 - 后端启动日志会写入 `backend.log`；健康检查失败时会在 `sag.log` 记录进程状态、可执行文件校验和动态库诊断。
 - 后端固定使用纯 asyncio + h11，避免旧版 NAS 在 uvloop/httptools 中触发 CPU 指令兼容问题。
+- fnOS 启动阶段不加载 LanceDB 本地扩展；存储升级探测只读取 SQLite 和 Lance 表目录，避免 Intel Celeron J4125 等旧 CPU 在 `import lancedb` 阶段卡死。
 - 后端启动会记录 `[SAG boot] phase=...`；如果仍以退出码 132（SIGILL）退出，`sag.log` 还会记录 NAS 的 CPU 型号和 flags，用于定位具体本地库。
 
 GitHub Actions 的 cron 使用 UTC，因此北京时间 10:00 对应 02:00。
