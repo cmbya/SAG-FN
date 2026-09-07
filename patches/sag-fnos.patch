@@ -1,3 +1,22 @@
+diff --git a/apps/web/app/page.tsx b/apps/web/app/page.tsx
+new file mode 100644
+index 0000000..c4c0f7a
+--- /dev/null
++++ b/apps/web/app/page.tsx
+@@ -0,0 +1,12 @@
++import { cookies, headers } from "next/headers";
++import { redirect } from "next/navigation";
++
++import { tokenCookieName } from "@/lib/auth-cookie";
++
++/** fnOS basePath 的应用根入口；将 /app/SAG 稳定导向登录页或工作台。 */
++export default async function RootPage() {
++  const headerStore = await headers();
++  const cookieStore = await cookies();
++  const token = cookieStore.get(tokenCookieName(headerStore.get("host") ?? ""))?.value;
++  redirect(token ? "/chat" : "/login");
++}
++
 diff --git a/apps/web/lib/api.ts b/apps/web/lib/api.ts
 index f610239..eaef71e 100644
 --- a/apps/web/lib/api.ts
