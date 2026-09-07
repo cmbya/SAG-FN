@@ -180,11 +180,11 @@ web_process_matches() {
     node|nodejs) ;;
     *) return 1 ;;
   esac
-  web_command_line="$(tr '\000' ' ' < "/proc/$candidate_pid/cmdline" 2>/dev/null || true)"
-  case "$web_command_line" in
-    *" server.js"*) return 0 ;;
-  esac
-  return 1
+  # Next.js may rewrite the process title from `node server.js` to a
+  # `next-server (...)` form. The dedicated SAG web cwd plus the Node
+  # executable are the stable identity checks; do not require server.js in
+  # the rewritten command line.
+  return 0
 }
 
 pid_matches() {
