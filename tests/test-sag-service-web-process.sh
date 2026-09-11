@@ -53,4 +53,21 @@ if web_process_matches abc; then
   exit 1
 fi
 
+base_path_value="$(sed -n 's/^BASE_PATH="\([^"]*\)"$/\1/p' "$SERVICE")"
+[ "$base_path_value" = "/app/SAG" ] || {
+  printf '%s\n' "unexpected BASE_PATH: $base_path_value" >&2
+  exit 1
+}
+web_base_url="http://127.0.0.1:18199${base_path_value}"
+root_probe_url="${web_base_url}/"
+bootstrap_probe_url="${web_base_url}/api/v1/system/storage-bootstrap"
+[ "$root_probe_url" = "http://127.0.0.1:18199/app/SAG/" ]
+[ "$bootstrap_probe_url" = "http://127.0.0.1:18199/app/SAG/api/v1/system/storage-bootstrap" ]
+case "${bootstrap_probe_url#*://}" in
+  *//* )
+    printf '%s\n' "bootstrap probe URL contains repeated slashes: $bootstrap_probe_url" >&2
+    exit 1
+    ;;
+esac
+
 printf '%s\n' 'web process matching tests passed'
