@@ -291,6 +291,28 @@ wait_http() {
   return 1
 }
 
+validate_storage_bootstrap() {
+  bootstrap_url="$1"
+  bootstrap_body="$(curl -fsS --max-time 4 "$bootstrap_url" 2>/dev/null || true)"
+  [ -n "$bootstrap_body" ] || return 1
+  bootstrap_phase="$($NODE_BIN -e '
+    try {
+      const value = JSON.parse(process.argv[1]);
+      const phases = new Set(["ready", "choice_required", "processing", "failed"]);
+      if (!phases.has(value?.phase) || !Array.isArray(value?.choices)) process.exit(1);
+      process.stdout.write(value.phase);
+    } catch {
+      process.exit(1);
+    }
+  ' "$bootstrap_body" 2>/dev/null || true)"
+  [ -n "$bootstrap_phase" ] || {
+    log "storage bootstrap probe returned an invalid response: $bootstrap_body"
+    return 1
+  }
+  log "storage bootstrap probe ok phase=$bootstrap_phase"
+  return 0
+}
+
 backend_diagnostics() {
   backend_path="$1"
   backend_pid="$2"
@@ -478,6 +500,14 @@ start_web() {
     fail "$web_failure"
     return 1
   fi
+  bootstrap_url="http://127.0.0.1:${WEB_PORT}${BASE_PATH}/api/v1/system/storage-bootstrap"
+  if ! wait_http "$bootstrap_url" "$web_pid" web || ! validate_storage_bootstrap "$bootstrap_url"; then
+    tail -n 80 "$web_log" >> "$LOG_DIR/sag.log" 2>/dev/null || true
+    stop_one web "$WEB_PID_FILE"
+    cleanup_web_processes
+    fail "SAG 存储状态代理检查失败，请查看 logs/webui.log 与 logs/sag.log"
+    return 1
+  fi
 }
 
 start_gateway() {
@@ -499,6 +529,8 @@ start_gateway() {
     export SAG_GATEWAY_SOCKET="$socket_path"
     export SAG_WEB_HOST="127.0.0.1"
     export SAG_WEB_PORT="$WEB_PORT"
+    export SAG_API_HOST="127.0.0.1"
+    export SAG_API_PORT="$API_PORT"
     exec "$NODE_BIN" "$APP_ROOT/bin/sag-gateway.mjs"
   ) >> "$LOG_DIR/gateway.log" 2>&1 &
   gateway_pid="$!"

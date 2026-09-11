@@ -18,10 +18,17 @@ index 0000000..c4c0f7a
 +}
 +
 diff --git a/apps/web/lib/api.ts b/apps/web/lib/api.ts
-index f610239..eaef71e 100644
+index f610239..d4d971b 100644
 --- a/apps/web/lib/api.ts
 +++ b/apps/web/lib/api.ts
-@@ -46,6 +46,10 @@ import type {
+@@ -1,5 +1,6 @@
+ import { clearToken, getToken } from "./auth";
+ import { getDiagnosticsStore } from "./diagnostics";
++import { parseStorageBootstrapStatus } from "./storage-bootstrap";
+ import { generateUuidV4 } from "./uuid";
+ import { readClientLocale } from "../i18n/client";
+ import { clientErrorMessage, serverErrorMessage } from "../i18n/client-errors";
+@@ -46,6 +47,10 @@ import type {
  /** 浏览器通过局域网 IP 打开前端时，自动将 API 指向同主机 8000 端口。 */
  function resolveApiBase(): string {
    const configured = process.env.NEXT_PUBLIC_API_BASE;
@@ -32,24 +39,55 @@ index f610239..eaef71e 100644
    if (typeof window !== "undefined") {
      const { protocol, hostname } = window.location;
      const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
-@@ -270,7 +274,7 @@ async function streamGlobalSearch(
+@@ -64,6 +69,10 @@ function resolveApiBase(): string {
+ 
+ export const API_BASE = resolveApiBase();
+ 
++function appPath(path: string): string {
++  return API_BASE.startsWith("/") ? API_BASE + path : path;
++}
++
+ export class ApiError extends Error {
+   status: number;
+   code: string;
+@@ -270,7 +279,7 @@ async function streamGlobalSearch(
  
    if (response.status === 401 && typeof window !== "undefined") {
      clearToken();
 -    window.location.href = "/login";
-+    window.location.href = API_BASE + "/login";
++    window.location.href = appPath("/login");
    }
    if (!response.ok || !response.body) {
      clearStreamTimeout();
-@@ -500,7 +504,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+@@ -500,7 +509,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
      redirectOnUnauthorized
    ) {
      clearToken();
 -    window.location.href = "/login";
-+    window.location.href = API_BASE + "/login";
++    window.location.href = appPath("/login");
    }
  
    if (!res.ok) {
+@@ -659,15 +668,15 @@ export const api = {
+     }),
+   me: () => request<User>("/api/v1/auth/me"),
+   storageBootstrap: () =>
+-    request<StorageBootstrapStatus>("/api/v1/system/storage-bootstrap", {
++    request<unknown>("/api/v1/system/storage-bootstrap", {
+       redirectOnUnauthorized: false,
+-    }),
++    }).then(parseStorageBootstrapStatus),
+   chooseStorageBootstrap: (choice: StorageChoice) =>
+-    request<StorageBootstrapStatus>("/api/v1/system/storage-bootstrap/choice", {
++    request<unknown>("/api/v1/system/storage-bootstrap/choice", {
+       method: "POST",
+       body: JSON.stringify({ choice }),
+       redirectOnUnauthorized: false,
+-    }),
++    }).then(parseStorageBootstrapStatus),
+   capabilities: () => request<Capabilities>("/api/v1/system/capabilities"),
+   getSystemPreferences: () =>
+     request<SystemPreferences>("/api/v1/system/preferences"),
 diff --git a/apps/web/middleware.ts b/apps/web/middleware.ts
 index adf86b6..d66ab22 100644
 --- a/apps/web/middleware.ts
@@ -1115,3 +1153,83 @@ diff --git a/apps/api/sag_api/upgrades/zleap_sag_0_7_to_0_8/vectors.py b/apps/ap
 +    # the engine must provide a safe bulk-import/compaction contract first.
 +    await target_engine.resources.vector.publish(tuple(COLLECTIONS.values()))
 +    return VectorMigrationReport(row_counts=counts, vector_dimensions=dimensions)
+
+diff --git a/apps/web/components/features/storage-bootstrap-gate.tsx b/apps/web/components/features/storage-bootstrap-gate.tsx
+index da29c3f..f081545 100644
+--- a/apps/web/components/features/storage-bootstrap-gate.tsx
++++ b/apps/web/components/features/storage-bootstrap-gate.tsx
+@@ -13,7 +13,10 @@ import {
+ 
+ import { api, ApiError } from "@/lib/api";
+ import { getToken, setToken, clearToken } from "@/lib/auth";
+-import { createStorageBootstrapPoller } from "@/lib/storage-bootstrap";
++import {
++  createStorageBootstrapPoller,
++  StorageBootstrapProtocolError,
++} from "@/lib/storage-bootstrap";
+ import type {
+   AuthStatus,
+   StorageBootstrapStatus,
+@@ -38,6 +41,7 @@ function loadInitialStatus(): Promise<StorageBootstrapStatus> {
+ }
+ 
+ function errorText(error: unknown, fallback: string): string {
++  if (error instanceof StorageBootstrapProtocolError) return error.message;
+   return error instanceof ApiError ? error.message : fallback;
+ }
+ 
+diff --git a/apps/web/lib/storage-bootstrap.ts b/apps/web/lib/storage-bootstrap.ts
+index e3d0c38..d113f29 100644
+--- a/apps/web/lib/storage-bootstrap.ts
++++ b/apps/web/lib/storage-bootstrap.ts
+@@ -1,5 +1,41 @@
+ import type { StorageBootstrapStatus } from "./types";
+ 
++const STORAGE_BOOTSTRAP_PHASES = new Set<StorageBootstrapStatus["phase"]>([
++  "ready",
++  "choice_required",
++  "processing",
++  "failed",
++]);
++
++export class StorageBootstrapProtocolError extends Error {
++  readonly payload: unknown;
++
++  constructor(payload: unknown) {
++    super("存储状态接口返回格式异常，请重试或查看网关日志。");
++    this.name = "StorageBootstrapProtocolError";
++    this.payload = payload;
++  }
++}
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null;
++}
++
++/** Validate the untrusted JSON returned by the fnOS API/gateway path. */
++export function parseStorageBootstrapStatus(
++  value: unknown,
++): StorageBootstrapStatus {
++  if (
++    !isRecord(value) ||
++    typeof value.phase !== "string" ||
++    !STORAGE_BOOTSTRAP_PHASES.has(value.phase as StorageBootstrapStatus["phase"]) ||
++    !Array.isArray(value.choices)
++  ) {
++    throw new StorageBootstrapProtocolError(value);
++  }
++  return value as unknown as StorageBootstrapStatus;
++}
++
+ export type StorageBootstrapView =
+   | { kind: "ready" }
+   | { kind: "choice" }
+@@ -22,6 +58,8 @@ export function viewForStorageBootstrap(
+         recoverable: status.recoverable,
+         error: status.error,
+       };
++    default:
++      throw new StorageBootstrapProtocolError(status);
+   }
+ }
+ 
