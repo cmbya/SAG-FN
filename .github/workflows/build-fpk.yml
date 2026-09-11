@@ -183,6 +183,11 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Test fnOS service and gateway routing
+        run: |
+          sh tests/test-sag-service-web-process.sh
+          node tests/test-sag-gateway.mjs
+
       - name: Install image tooling
         run: |
           sudo apt-get update
