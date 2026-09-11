@@ -530,8 +530,6 @@ start_gateway() {
     export SAG_GATEWAY_SOCKET="$socket_path"
     export SAG_WEB_HOST="127.0.0.1"
     export SAG_WEB_PORT="$WEB_PORT"
-    export SAG_API_HOST="127.0.0.1"
-    export SAG_API_PORT="$API_PORT"
     exec "$NODE_BIN" "$APP_ROOT/bin/sag-gateway.mjs"
   ) >> "$LOG_DIR/gateway.log" 2>&1 &
   gateway_pid="$!"
